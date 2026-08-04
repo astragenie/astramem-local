@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
-import { JobRepo, AGING_STEP_MS } from '../../src/pipeline/job-repo.js';
+import { JobRepo, AGING_STEP_MS, JOB_PRIORITY } from '../../src/pipeline/job-repo.js';
 import type { DB } from '../../src/storage/db.js';
 
 describe('JobRepo', () => {
@@ -190,6 +190,40 @@ describe('JobRepo', () => {
 
     it('pendingByPriority returns an empty array when there are no pending jobs', () => {
       expect(repo.pendingByPriority()).toEqual([]);
+    });
+  });
+
+  describe('hasPendingAbovePriority (FEAT-482 worker-starvation wave, item 2/3)', () => {
+    it('returns false when the queue is empty', () => {
+      expect(repo.hasPendingAbovePriority(JOB_PRIORITY.consolidate)).toBe(false);
+    });
+
+    it('returns false when only same-or-lower-priority jobs are pending', () => {
+      repo.enqueue('consolidate', {}); // P3, same tier as the threshold
+      repo.enqueue('cleanup', { older_than_days: 30 }); // P5, lower priority
+      expect(repo.hasPendingAbovePriority(JOB_PRIORITY.consolidate)).toBe(false);
+    });
+
+    it('returns true as soon as a strictly higher-priority job is pending', () => {
+      repo.enqueue('consolidate', {});
+      repo.enqueue('distill', { transcript_id: 't1', session_id: 's1' }); // P1 < P3
+      expect(repo.hasPendingAbovePriority(JOB_PRIORITY.consolidate)).toBe(true);
+    });
+
+    it('ignores a higher-priority job that is already running, not pending', () => {
+      repo.enqueue('consolidate', {});
+      repo.enqueue('distill', { transcript_id: 't1', session_id: 's1' });
+      repo.claimPending({ preferKinds: ['distill'] }); // distill job -> 'running'
+      expect(repo.hasPendingAbovePriority(JOB_PRIORITY.consolidate)).toBe(false);
+    });
+
+    it('does not use aged effective priority — a stale low-priority job never reports as "higher priority"', () => {
+      const cleanupId = repo.enqueue('cleanup', { older_than_days: 30 }); // P5
+      // Backdate it far past several aging steps — claimPending() would treat
+      // it as effectively high-priority, but hasPendingAbovePriority checks
+      // the STORED tier only (existence, not claim-order fairness).
+      db.prepare('UPDATE jobs SET created_at = ? WHERE id = ?').run(Date.now() - AGING_STEP_MS * 10, cleanupId);
+      expect(repo.hasPendingAbovePriority(JOB_PRIORITY.consolidate)).toBe(false);
     });
   });
 });

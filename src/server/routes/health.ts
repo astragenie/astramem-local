@@ -11,7 +11,12 @@ import type { HealthState } from '../health-state.js';
 import { isLoopbackHost } from '../lib/network.js';
 import { usefulnessRate } from '../../storage/usefulness.js';
 import { queryJobStates } from '../queries/dashboard.js';
-import { buildMemoryHealthCheap, distillSessionStats, type MemoryHealthReport } from '../queries/memory-health.js';
+import {
+  buildMemoryHealthCheap,
+  distillSessionStats,
+  DISTILL_POISON_RATE_WINDOW_DAYS,
+  type MemoryHealthReport,
+} from '../queries/memory-health.js';
 import { POISON_RATE_ALARM, MEANINGFUL_USAGE_THRESHOLD } from '../../doctor/checks/shared.js';
 import type { DistillPoisonRateSnapshot } from '../health-state.js';
 import { getProviderHealthEntry, type ProviderHealthEntry } from '../../providers/llm/health-tracking.js';
@@ -227,9 +232,10 @@ function distillPoisonRateBlock(db: DB): DistillPoisonRateSnapshot {
         stats.terminal >= MEANINGFUL_USAGE_THRESHOLD &&
         stats.poisonRate !== null &&
         stats.poisonRate >= POISON_RATE_ALARM,
+      windowDays: stats.windowDays,
     };
   } catch {
-    return { poison: 0, terminal: 0, rate: null, alarmed: false };
+    return { poison: 0, terminal: 0, rate: null, alarmed: false, windowDays: DISTILL_POISON_RATE_WINDOW_DAYS };
   }
 }
 

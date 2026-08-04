@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { JobHandler } from '../handler.js';
 import { isExtendedCtx } from '../handler-ctx-ext.js';
 import { runConsolidation } from '../../consolidate/consolidate.js';
+import { JobRepo, JOB_PRIORITY } from '../job-repo.js';
 
 const ConsolidatePayloadSchema = z.object({
   merge_threshold: z.number().min(0).max(1).optional(),
@@ -27,9 +28,16 @@ export const consolidateHandler: JobHandler = {
   kind: 'consolidate',
   async handle(payload, ctx): Promise<void> {
     const parsed = ConsolidatePayloadSchema.parse(payload ?? {});
+    // FEAT-482 (worker-starvation wave, item 2/3): give the run queue
+    // visibility so it can voluntarily stop at a safe checkpoint when a
+    // higher-priority job (distill, etc.) shows up mid-run instead of
+    // running to completion and starving it — see
+    // ConsolidateOpts.preemptIfHigherPriorityPending's doc comment.
+    const jobRepo = new JobRepo(ctx.db);
     await runConsolidation(ctx.db, {
       mergeThreshold: parsed.merge_threshold,
       proposeThreshold: parsed.propose_threshold,
+      preemptIfHigherPriorityPending: () => jobRepo.hasPendingAbovePriority(JOB_PRIORITY.consolidate),
       // FEAT-442: scheduled/enqueued runs pick up the configured auto-accept
       // threshold (default null = OFF, byte-identical to pre-FEAT-442).
       autoAcceptThreshold: ctx.config.consolidation.autoAcceptThreshold,

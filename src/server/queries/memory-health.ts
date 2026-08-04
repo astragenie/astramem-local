@@ -154,11 +154,15 @@ function correctionStats(db: DB, activeCount: number): CorrectionStats {
 }
 
 /**
- * Distinct sessions with a permanently-failed distill job. idx_jobs_state
- * (state, created_at) makes state='poison' an index range scan (bounded by
- * poison-job count, normally tiny); kind='distill' and the json_extract
- * session_id are evaluated only over that already-small row set — never a
- * scan of the full jobs table.
+ * Distinct sessions with a permanently-failed distill job. Index-backed —
+ * bounded by poison-job count, never a scan of the full jobs table.
+ * Migration 060 (2026-08-02 poison-metric-window fix) added
+ * idx_jobs_distill_terminal_window (state, updated_at) WHERE kind =
+ * 'distill', which is a tighter match for this query's `state = 'poison'
+ * AND kind = 'distill'` shape than the older idx_jobs_state (state,
+ * created_at) — SQLite's planner now picks the newer partial index instead
+ * (verified via EXPLAIN QUERY PLAN); either is index-backed, so this is a
+ * plan-choice detail, not a behavior change.
  */
 function poisonDistillSessionCount(db: DB): number {
   try {
@@ -174,29 +178,55 @@ function poisonDistillSessionCount(db: DB): number {
 
 // ---------------------------------------------------------------------------
 // Distill-session poison rate (ADR-015 rule 6/2, A2-lite) — doctor-only, NOT
-// wired into buildMemoryHealthCheap()/`/health` (see file header: the cheap
-// tier is index-backed-only, and the `state IN (...)` scan below is bounded
-// by terminal-job count, not a single equality prefix like the poison-only
-// count above — same O(N)-over-a-bounded-table cost class as
-// countsByTypeAndScope()/stalenessDistribution() in the full tier, not the
-// cheap one). checkMemoryHealth (src/doctor/checks.ts) already calls
-// buildMemoryHealthFull(), so this is a second read alongside that, not a
-// replacement for it.
+// wired into buildMemoryHealthCheap()/`/health`'s cheap DB fields (see file
+// header: the cheap tier is index-backed-only). It IS read by /health's
+// separately-refreshed `distill_poison_rate` block (FEAT-538,
+// src/server/routes/health.ts) on the same 30s off-request-path cadence as
+// everything else there — see that file for how the two co-exist without
+// putting a heavier query on the hot request path. checkMemoryHealth
+// (src/doctor/checks/memory-health.ts) already calls buildMemoryHealthFull(),
+// so this is a second read alongside that, not a replacement for it.
 // ---------------------------------------------------------------------------
 
+/**
+ * Rolling window (days) `distillSessionStats()` counts terminal/poison
+ * distill sessions over (2026-08-02 poison-metric-window fix). Deliberately
+ * NOT the same denominator as `poisonDistillSessionCount()`/
+ * `MemoryHealthReport.poisonDistillSessions` above, which stay a lifetime
+ * count for informational display — a lifetime poison RATE can only ever
+ * heal once the retention sweep eventually purges the offending rows
+ * (POISON_JOB_RETENTION_DAYS, job-repo.ts — 90 days), leaving the
+ * POISON_RATE_ALARM doctor/`/health` alarm stuck red for weeks after the
+ * underlying cause has already cleared (e.g. a one-off metered-provider
+ * quota burst). Windowing to the last 7 days makes the alarm answer "is
+ * extraction healthy RIGHT NOW", which is what an operator actually wants
+ * to know when this goes red. 7 days (not, say, 1) still gives
+ * MEANINGFUL_USAGE_THRESHOLD (20 terminal sessions) a realistic chance to
+ * accumulate on a normal-traffic install before the alarm can fire at all.
+ */
+export const DISTILL_POISON_RATE_WINDOW_DAYS = 7;
+
 export interface DistillSessionStats {
+  /** The rolling window (days) `terminal`/`poison`/`poisonRate` below were
+   *  computed over — see DISTILL_POISON_RATE_WINDOW_DAYS. Echoed back so a
+   *  consumer (doctor message, /health wire field) can state it without
+   *  re-importing the constant. */
+  windowDays: number;
   /** Distinct session_id values among distill jobs that reached a terminal
-   *  state (completed or poison). Pending/running/retrying('failed') jobs
-   *  are excluded — they have not concluded yet, so counting them would
-   *  move the denominator under a still-running backlog rather than
-   *  reflecting outcomes. */
+   *  state (completed or poison) within the last `windowDays` days (by
+   *  `updated_at`, i.e. when the job actually transitioned, not when it was
+   *  enqueued). Pending/running/retrying('failed') jobs are excluded — they
+   *  have not concluded yet, so counting them would move the denominator
+   *  under a still-running backlog rather than reflecting outcomes. */
   terminal: number;
-  /** Distinct session_id values among distill jobs in the 'poison' state —
-   *  permanently failed after exhausting retries (JobRepo.markPoison). */
+  /** Distinct session_id values among distill jobs that transitioned to the
+   *  'poison' state (permanently failed after exhausting retries,
+   *  JobRepo.markPoison) within the same `windowDays`-day window. */
   poison: number;
-  /** poison / terminal. null when terminal === 0 (nothing concluded yet to
-   *  judge a rate from — mirrors the null convention usefulnessRate() and
-   *  correctionStats() above already use for an empty denominator). */
+  /** poison / terminal. null when terminal === 0 (nothing concluded yet in
+   *  the window to judge a rate from — mirrors the null convention
+   *  usefulnessRate() and correctionStats() above already use for an empty
+   *  denominator). */
   poisonRate: number | null;
 }
 
@@ -204,23 +234,33 @@ export interface DistillSessionStats {
  * The ADR-015 rule 6 "state the denominator" counter checkMemoryHealth was
  * missing — its only return path was `{ok: true}`; a 100% poison rate still
  * reported "memory health: OK" (see checks.ts's doc comment on
- * checkMemoryHealth). `terminal` rides idx_jobs_distill_session (migration
- * 018, partial `WHERE kind = 'distill'`) the same way
- * poisonDistillSessionCount above does; degrades to a null rate rather than
- * throwing on a bare/pre-migration test DB.
+ * checkMemoryHealth). Both queries below ride idx_jobs_distill_terminal_window
+ * (migration 060, partial `WHERE kind = 'distill'` indexed on (state,
+ * updated_at)) — see that migration's comment for why neither pre-existing
+ * jobs index (idx_jobs_state, idx_jobs_distill_session) covers this shape.
+ * Degrades to a null rate rather than throwing on a bare/pre-migration test
+ * DB (e.g. no `jobs` table at all).
  */
-export function distillSessionStats(db: DB): DistillSessionStats {
+export function distillSessionStats(db: DB, opts: { windowDays?: number } = {}): DistillSessionStats {
+  const windowDays = opts.windowDays ?? DISTILL_POISON_RATE_WINDOW_DAYS;
   try {
+    const cutoffMs = Date.now() - windowDays * 24 * 60 * 60 * 1000;
     const terminalRow = db.prepare(`
       SELECT COUNT(DISTINCT json_extract(payload_json, '$.session_id')) AS n
       FROM jobs
-      WHERE kind = 'distill' AND state IN ('completed', 'poison')
-    `).get() as { n: number };
+      WHERE kind = 'distill' AND state IN ('completed', 'poison') AND updated_at >= ?
+    `).get(cutoffMs) as { n: number };
+    const poisonRow = db.prepare(`
+      SELECT COUNT(DISTINCT json_extract(payload_json, '$.session_id')) AS n
+      FROM jobs
+      WHERE kind = 'distill' AND state = 'poison' AND updated_at >= ?
+    `).get(cutoffMs) as { n: number };
     const terminal = terminalRow.n;
-    const poison = poisonDistillSessionCount(db);
-    return { terminal, poison, poisonRate: terminal > 0 ? poison / terminal : null };
+    const poison = poisonRow.n;
+    return { windowDays, terminal, poison, poisonRate: terminal > 0 ? poison / terminal : null };
   } catch {
-    return { terminal: 0, poison: 0, poisonRate: null }; // jobs table absent — degrade, never throw.
+    // jobs table absent (bare test DB) — degrade, never throw.
+    return { windowDays, terminal: 0, poison: 0, poisonRate: null };
   }
 }
 
