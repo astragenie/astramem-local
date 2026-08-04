@@ -1,0 +1,116 @@
+name: Publish architecture docs
+
+# Renders the architecture sheets into the shared publishing repo
+# (sergeymilashico/architecture) so they can be read by people who should NOT
+# be granted access to this private repository.
+#
+# The source of truth is ALWAYS this repo. The published copy is generated,
+# carries a provenance banner naming the commit it came from, and is
+# overwritten wholesale on every run. Never edit the published copy.
+#
+# Why an explicit allowlist and not `docs/architecture/*`:
+# that directory also holds INTERNAL material — architecture-review.md, the
+# fleet-migration adversarial review, and reviews/ — which must not reach a
+# repo that outside collaborators can read. A glob here would leak them the
+# first time someone dropped a new review file in. Add files to PUBLISH_MAP
+# deliberately, one line at a time.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/architecture/astramem-architecture-sheets.md'
+      - '.github/workflows/publish-architecture.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-architecture
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ["self-hosted", "astragenie", "aws"]
+    steps:
+      # Fail loudly rather than silently skipping. A publish job that quietly
+      # no-ops when its credential is missing is how documentation goes stale
+      # without anyone noticing — the same failure mode that let an expired
+      # AUTOMERGE_PAT run green for weeks (see auto-merge.yml).
+      - name: Preflight — require ARCH_PUBLISH_TOKEN
+        env:
+          TOKEN: ${{ secrets.ARCH_PUBLISH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error title=ARCH_PUBLISH_TOKEN not set::Architecture publishing is disarmed. Create a fine-grained PAT with contents:write on sergeymilashico/architecture and store it as the ARCH_PUBLISH_TOKEN secret in this repository. GITHUB_TOKEN cannot be used — it has no access to a repo outside this org."
+            exit 1
+          fi
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Checkout publish target
+        uses: actions/checkout@v4
+        with:
+          repository: sergeymilashico/architecture
+          token: ${{ secrets.ARCH_PUBLISH_TOKEN }}
+          path: target
+
+      - name: Render
+        working-directory: source
+        env:
+          PRODUCT: astramem-local
+        run: |
+          set -euo pipefail
+
+          SHA="$(git rev-parse --short HEAD)"
+          VERSION="$(node -p "require('./package.json').version")"
+          TODAY="$(date -u +%Y-%m-%d)"
+          OUT="../target/${PRODUCT}"
+          mkdir -p "$OUT"
+
+          # Explicit allowlist: "<source path>|<published filename>"
+          PUBLISH_MAP="docs/architecture/astramem-architecture-sheets.md|architecture-sheets.md"
+
+          echo "$PUBLISH_MAP" | while IFS='|' read -r src dest; do
+            [ -n "$src" ] || continue
+            if [ ! -f "$src" ]; then
+              echo "::error title=Missing source file::$src is in PUBLISH_MAP but does not exist."
+              exit 1
+            fi
+            {
+              echo "<!--"
+              echo "  GENERATED FILE — DO NOT EDIT HERE."
+              echo "  Source of truth: astragenie/astramem-local :: ${src}"
+              echo "  Edits made in this repo will be overwritten by the next publish."
+              echo "-->"
+              echo
+              echo "> **Published from** \`astragenie/astramem-local\` @ \`${SHA}\` · ${PRODUCT} **v${VERSION}**"
+              echo "> **Generated** ${TODAY}. If the source repo has moved on, this page is stale — check the SHA."
+              echo
+              cat "$src"
+            } > "${OUT}/${dest}"
+            echo "rendered ${src} -> ${PRODUCT}/${dest}"
+          done
+
+      - name: Commit and push
+        working-directory: target
+        env:
+          SRC_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name  "astramem-docs-bot"
+          git config user.email "noreply@astragenie.com"
+
+          if git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "No documentation changes to publish."
+            exit 0
+          fi
+
+          git add -A
+          git commit -m "docs(astramem-local): sync architecture sheets from ${SRC_SHA:0:8}"
+          git push
+          echo "Published. Verify: https://github.com/sergeymilashico/architecture"
