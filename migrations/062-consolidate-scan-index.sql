@@ -1,0 +1,38 @@
+-- 062: covering index for consolidate's atom-loading page scan
+-- (loadAtomsSetupBounded, src/consolidate/consolidate.ts:1089-1116).
+--
+-- loadAtomsSetupBounded pages through the whole active corpus with:
+--
+--   SELECT m.id, m.rowid, m.repo, m.type, m.text, m.importance, m.created_at, m.derived_from
+--   FROM memories m
+--   JOIN memories_vec v ON v.rowid = m.rowid
+--   WHERE m.valid_to IS NULL
+--   ORDER BY m.repo, m.type, m.created_at, m.rowid
+--   LIMIT ? OFFSET ?
+--
+-- synchronously, on the daemon's main thread, once per page (~190 pages for
+-- a ~94.5k-row corpus). With no index covering (valid_to, repo, type,
+-- created_at), EXPLAIN QUERY PLAN showed "USE TEMP B-TREE FOR ORDER BY":
+-- every single page re-sorted the ENTIRE active-memories result set from
+-- scratch just to hand back one LIMIT-sized slice of it. Live in production
+-- as of 2026-08-02, this was the second of two stacked consolidate-path
+-- stalls (see migration 061 for the first) -- el_max=93s and climbing.
+--
+-- Mitigation: a covering index on (repo, type, created_at), scoped to
+-- valid_to IS NULL (the exact predicate the query filters on -- the
+-- overwhelming majority of the table is archived/invalidated once a corpus
+-- is healthy, so a partial index keeps this small regardless of table
+-- growth, same pattern as migration 059's partial indexes). The index's
+-- column order matches the query's ORDER BY exactly (repo, type,
+-- created_at), and SQLite appends each entry's own rowid as an implicit
+-- final tiebreaker for a non-unique index -- which is exactly the query's
+-- trailing `m.rowid` sort key -- so the whole ORDER BY is satisfied by a
+-- walk of the index itself, with no separate sort step and no temp b-tree,
+-- regardless of how many pages are paged through.
+--
+-- Deliberately NOT a fix for OFFSET's own O(offset) row-skip cost (SQLite
+-- still walks and discards `offset` index entries per page even once the
+-- index avoids the sort) -- keyset pagination would close that but is out
+-- of scope here; tracked as a 0.22.1 follow-up.
+CREATE INDEX idx_memories_consolidate_scan ON memories(repo, type, created_at)
+  WHERE valid_to IS NULL;

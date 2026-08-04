@@ -716,13 +716,18 @@ export async function serve(opts: ServeOpts): Promise<void> {
         console.warn(`${ts()} [astramem-local] consolidate enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     };
-    // ASTRA_SKIP_CONSOLIDATE=1 kill-switch: on a large corpus the consolidate
-    // pairwise scan's SETUP (load all valid atoms + group + build per-group
-    // embedding maps) is synchronous and unbounded — it can freeze the event
-    // loop long enough on boot that the daemon looks dead (2026-07-15). The
-    // in-loop yield helps the O(n^2) scan itself but not the setup, so this
-    // switch lets an operator disable consolidation until the setup is also
-    // bounded. Skips both the boot pass and the recurring timer.
+    // ASTRA_SKIP_CONSOLIDATE=1 kill-switch: originally added because the
+    // consolidate pairwise scan's SETUP (load all valid atoms + group +
+    // build per-group embedding maps) ran as one synchronous, unbounded
+    // stretch that could freeze the event loop long enough on boot that the
+    // daemon looked dead (2026-07-15). That gap is closed — setup is now
+    // wall-clock-budgeted and cooperatively yielded (issue #387,
+    // `loadAtomsSetupBounded`/`setupBudgetMs`), and the whole run can
+    // voluntarily stop early the moment a higher-priority job is pending
+    // (FEAT-482, `preemptIfHigherPriorityPending`), not just the O(n^2)
+    // pair scan. The switch is kept as a manual operator escape hatch, not
+    // because either gap is still open. Skips both the boot pass and the
+    // recurring timer.
     if (process.env['ASTRA_SKIP_CONSOLIDATE'] === '1') {
       console.warn(`${ts()} [astramem-local] consolidation disabled via ASTRA_SKIP_CONSOLIDATE=1`);
     } else {

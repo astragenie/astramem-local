@@ -1,0 +1,41 @@
+-- 060: partial index for the poison-metric-window fix (2026-08-02).
+--
+-- distillSessionStats() (src/server/queries/memory-health.ts) used to be a
+-- lifetime, unwindowed COUNT over every distill job that ever reached a
+-- terminal state ('completed' or 'poison'). Once a burst of poison jobs
+-- pushed the doctor "Memory health" check / `/health`'s distill_poison_rate
+-- alarm red (ADR-015 rule 6/2, POISON_RATE_ALARM), it stayed red until the
+-- retention sweep eventually purged the poisoned rows
+-- (POISON_JOB_RETENTION_DAYS, src/pipeline/job-repo.ts — 90 days), long
+-- after the underlying cause had already cleared (production evidence,
+-- 2026-08-02: a 90-minute codex quota-exhaustion burst on 2026-07-31 left
+-- distill_poison_rate ALARMED at 47.6% two days later with zero new poison
+-- jobs and six successful distills in between). distillSessionStats() now
+-- windows to the last DISTILL_POISON_RATE_WINDOW_DAYS (7) days via
+-- `updated_at` (the time a job actually transitioned into its terminal
+-- state) rather than `created_at`.
+--
+-- Neither pre-existing jobs index covers this shape: idx_jobs_state
+-- (001-init.sql) is keyed (state, created_at) — wrong timestamp column and
+-- no `kind` prefix, so a windowed `kind = 'distill' AND state IN (...) AND
+-- updated_at >= ?` query would still have to scan every row matching just
+-- the leading `state` term across ALL job kinds. idx_jobs_distill_session
+-- (018-jobs-distill-session-index.sql) is an expression index on
+-- payload_json scoped to kind='distill' but carries no state/updated_at
+-- columns at all.
+--
+-- This index's partial predicate is the single equality term `kind =
+-- 'distill'` (matching 018's own predicate) — a trivially-implied match, so
+-- SQLite's partial-index eligibility check never has to reason about the
+-- query's `state IN (...)` list, only whether `kind = 'distill'` is present
+-- verbatim in the query's WHERE clause. Indexed columns are (state,
+-- updated_at), so both distillSessionStats() queries — terminal (`state IN
+-- ('completed', 'poison')`) and poison-only (`state = 'poison'`) — ride the
+-- same index for their `state` equality/IN-list plus `updated_at >= ?`
+-- range scan, the same "IN-list over an indexed equality column" pattern
+-- SQLite already handles well elsewhere in this schema (see 001-init.sql's
+-- idx_jobs_state). See tests/server/queries/memory-health-queries.test.ts's
+-- EXPLAIN QUERY PLAN assertion for proof this index is actually used by
+-- both shapes.
+CREATE INDEX IF NOT EXISTS idx_jobs_distill_terminal_window
+  ON jobs(state, updated_at) WHERE kind = 'distill';

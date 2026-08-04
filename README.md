@@ -60,7 +60,8 @@ the local daemon instead of the SaaS endpoint through a single environment varia
 ```bash
 npm install -g astramem-local
 astramem-local init
-# follow the wizard — picks Ollama or Azure, writes config.yaml + secrets.env
+# follow the wizard — picks embedding (ONNX in-process, default) and LLM (codex-subscription
+# default, or Ollama/Azure/Anthropic/OpenAI-compatible) providers, writes config.yaml + secrets.env
 astramem-local service install
 export MEMORY_API_URL=http://127.0.0.1:7777
 export MEMORY_BEARER=$(astramem-local token print)
@@ -94,20 +95,24 @@ cd astramemory-local
 bun install
 bun run build
 node dist/cli/index.js init
-# follow the wizard — picks Ollama or Azure, writes config.yaml + secrets.env
+# follow the wizard — picks embedding (ONNX in-process, default) and LLM (codex-subscription
+# default, or Ollama/Azure/Anthropic/OpenAI-compatible) providers, writes config.yaml + secrets.env
 node dist/cli/index.js service install
 export MEMORY_API_URL=http://127.0.0.1:7777
 export MEMORY_BEARER=$(node dist/cli/index.js token print)
 ```
 
-> **First run takes 10-30 minutes if Ollama isn't installed yet.** The wizard's default Ollama
-> tier pulls `qwen3:8b` (~5.2 GB) plus `mxbai-embed-large` (~670 MB) — about **5.9 GB**
-> download — with no separate confirmation prompt. Once running, `qwen3:8b` is heavier on RAM
-> than the prior default too: ~5.76 GB resident with flash-attention + a q8 KV cache (~6.2 GB
-> without), so the full local stack is roughly **~6.4 GB RAM** rather than the ~5.4 GB the
-> previous default needed — see [docs/providers.md](docs/providers.md) for the honest breakdown.
-> Install and start Ollama first (see [docs/providers.md](docs/providers.md)) if you'd rather not
-> wait mid-wizard.
+> **If you pick the Ollama LLM tier, first run can take 10-30 minutes** if Ollama isn't installed
+> yet. Since v0.18.0 the wizard's actual default LLM provider is `codex-subscription` (reuses an
+> existing `codex login` ChatGPT session — no local model download at all); Ollama is offered as
+> the free, fully-local alternative and becomes the pre-selected default when no Codex login is
+> detected. The Ollama LLM tier pulls `qwen2.5:7b` (~4.7 GB — the tested/recommended local
+> extraction model; the previously-tried `qwen3:8b` returned empty extraction output under
+> thinking mode and was dropped) plus `mxbai-embed-large` (~670 MB) if you also pick Ollama for
+> embedding — about **~5.4 GB** total download, with no separate confirmation prompt. Embedding
+> itself defaults to **ONNX** (bundled, in-process, no Ollama server required) regardless of
+> which LLM provider you choose. See [docs/providers.md](docs/providers.md) for the full
+> provider breakdown and RAM guidance.
 
 Restart Claude Code. All plugin hooks (PreCompact, SessionEnd, SubagentStop) now post to the
 local daemon. No other plugin changes needed.
@@ -253,16 +258,19 @@ but does not yet produce.
 
 ## Provider matrix
 
-| Concern         | Ollama (local, free)                     | Azure OpenAI (cloud)                         |
-|-----------------|------------------------------------------|----------------------------------------------|
-| LLM compaction  | qwen3:8b (default)              | gpt-4.1 or any deployment                   |
-| LLM extraction  | qwen3:8b (default)              | gpt-4.1 or any deployment                   |
-| Embedding       | mxbai-embed-large (1024-dim)             | text-embedding-3-small (1024 via dimensions) |
-| Cost            | $0 (local inference)                     | ~$0.02/1K tokens + $0.0001/1K embed tokens  |
-| Setup           | `ollama serve` + `ollama pull <model>`   | Azure portal + endpoint + deployment name    |
+| Concern         | Codex subscription (cloud, **shipped default**) | Ollama (local, free)          | ONNX (local, in-process)          | Azure OpenAI (cloud)                         |
+|------------------|--------------------------------------------------|---------------------------------|--------------------------------------|----------------------------------------------|
+| LLM compaction   | gpt-5.4-mini                                     | qwen2.5:7b (default tier)      | —                                     | gpt-4.1 or any deployment                    |
+| LLM extraction   | gpt-5.4-mini                                     | qwen2.5:7b (default tier)      | —                                     | gpt-4.1 or any deployment                    |
+| Embedding        | — (no embeddings endpoint)                       | mxbai-embed-large (1024-dim)   | mxbai-embed-large (1024-dim, **shipped default**) | text-embedding-3-small (1024 via dimensions) |
+| Cost             | ChatGPT subscription quota (not tracked by `budget.daily_usd`) | $0 (local inference) | $0 (local inference)                 | ~$0.02/1K tokens + $0.0001/1K embed tokens   |
+| Setup            | `codex login`                                     | `ollama serve` + `ollama pull <model>` | none — bundled, no server needed | Azure portal + endpoint + deployment name    |
 
-Providers are configurable independently per stage. Embedding provider is system-wide — switching
-requires `astramem-local rebuild --reembed` to re-index all memories in the new model's vector space.
+Providers are configurable independently per stage: LLM compaction/extraction is one axis,
+embedding is another. The `init` wizard defaults to `codex-subscription` for LLM (falling back to
+Ollama's `qwen2.5:7b` tier when no Codex login is detected) and `onnx` for embedding, but any
+combination is valid. Embedding provider is system-wide — switching requires
+`astramem-local rebuild --reembed` to re-index all memories in the new model's vector space.
 
 See [docs/providers.md](docs/providers.md) for full setup instructions.
 
@@ -338,6 +346,11 @@ Claude Code discovers and calls the tools below automatically when configured in
 
 Set `MEMORY_API_URL=http://127.0.0.1:7777` and `MEMORY_BEARER` to your token
 (printed by `astramem-local token print`).
+
+This daemon reads and writes only `MEMORY_API_URL` (`src/cli/init.ts`) — `/mcp` is appended to it
+the same way `/health` or `/search` would be. If you've seen `MEMORY_MCP_URL` referenced
+elsewhere, that's a separate variable from the companion plugin's docs for an older two-port
+SaaS-style deployment (distinct API and MCP servers); it doesn't apply to this single-port daemon.
 
 **Automated wiring:** `astramem-local mcp install --client <name>` writes the above for you —
 resolves the daemon's URL/port and Bearer token the same way `serve` does, and updates the
@@ -632,34 +645,35 @@ adapter's current status) and how to reproduce them.
 
 Documenting these here so they're a five-minute read instead of a surprise:
 
-- **Temporal queries are weak.** Bitemporal storage and `as_of` point-in-time filtering are
-  correct end-to-end (`migrations/006-atom-v3.sql`, `validityFilterClause()` in `src/search/search.ts`)
-  — the schema isn't the problem. What's missing is that automatic extraction doesn't populate a fact's own
-  `valid_at`/`invalid_at` window yet, so most memories carry no fact-level validity interval for
-  `as_of` to filter on. Treat point-in-time recall as schema-ready but not yet
-  extraction-populated.
-- **LLM-proxy captured transcripts are spooled to disk unredacted.** The stage-0 secret-redaction
-  pass is enforced at ingest time, not at spool-write time (`src/capture/proxy.ts`) — a
-  transcript captured via the LLM-proxy path sits in the spool directory before redaction ever
-  runs over it. Redacting at spool-write time is planned, not yet shipped.
+- **Temporal queries are weak, and the gap is asymmetric.** Bitemporal storage and `as_of`
+  point-in-time filtering are correct end-to-end (`migrations/006-atom-v3.sql`,
+  `validityFilterClause()` in `src/search/search.ts`) — the schema isn't the problem, and it isn't
+  simply unpopulated either. `AtomSchema` (`src/distill/prompts/extract.ts`) has both `valid_at`
+  and `invalid_at`, but extraction only fills in one of them in practice: a 2499-atom measurement
+  found 423 distinct `valid_from` values (the `valid_at` half works) against zero non-null
+  `valid_to` (the `invalid_at` half has never fired). Whether that's a bug or just reflects that
+  conversations rarely state an explicit invalidation is unmeasured. Treat point-in-time recall as
+  schema-ready with one-sided extraction coverage, not fully extraction-populated.
 - **Contradicting memories can both be returned by recall.** Contradiction detection ships
   `mode: 'enabled'` by default (`src/config/config.ts`) but only *proposes* — it doesn't
   auto-resolve. Until a consolidation proposal is accepted or rejected
   (`list_consolidation_proposals` / `resolve_consolidation_proposal`), the original memory and
   the one that contradicts it are both live and both eligible to surface in the same
   search/recall call.
-- **The reasoning-model extraction guard only covers one model family.** Thinking-mode local
-  models can silently return an empty `{"atoms":[]}` extraction — a well-formed,
-  successful-looking response — if their thinking mode consumes the whole turn before
-  `format:json` output is produced. The fix in this repo is a **model-name regex**
-  (`/^qwen3/i`, on the `think` field of `OllamaLLMConfig` in `src/providers/llm/ollama.ts`), not
-  general thinking-mode detection. That same config's own doc comment names `deepseek-r1` as an
-  equally affected model family that is **not** covered. `doctor`'s `llmChatProbe`
-  (`src/doctor/probes/llm-chat-probe.ts`) won't catch this either — it never passes `format:json`,
-  so a green probe is not evidence extraction actually works. **Stick to a tested extraction
-  model** (`qwen3:8b` or
-  `qwen2.5-coder:7b`); if you switch to another local reasoning model, verify with a real
-  extraction run, not just `doctor`.
+- **Local Ollama models default to non-thinking mode — opt-in, not name-based detection.**
+  Thinking-mode local models can silently return an empty `{"atoms":[]}` extraction — a
+  well-formed, successful-looking response — if their reasoning trace consumes the whole turn
+  before `format:json` output is produced. Earlier versions tried to catch this with a model-name
+  regex, which was incomplete by construction. `OllamaLLMConfig.think`
+  (`src/providers/llm/ollama.ts`) now defaults to `false` for every model regardless of name;
+  reasoning mode requires an explicit `think: true` override, so the class of bug is closed for
+  the default path rather than patched per model name. `doctor`'s `llmChatProbe`
+  (`src/doctor/probes/llm-chat-probe.ts`) sends a real `format:json` request and requires a
+  parseable, non-empty response, so a broken provider/model combination shows red instead of a
+  false-green plain-chat probe. **Stick to the tested extraction model** (`qwen2.5:7b` — F1 67%,
+  precision 99% in the 2026-07-08 extraction-bench A/B; `qwen3:8b` was tried as the default and
+  dropped after it returned empty extraction output); if you switch to another local reasoning
+  model with `think: true`, verify with a real extraction run, not just `doctor`.
 
 ---
 

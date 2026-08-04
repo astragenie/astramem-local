@@ -45,11 +45,12 @@
  * the real daemon. Never set by real serving; no config.yaml/CLI surface
  * exposes it.
  */
-import { Entry } from '@napi-rs/keyring';
+import type { Entry } from '@napi-rs/keyring';
 import { randomBytes, createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { BoundedEntry, CredentialStoreTimeoutError, type EntryLike } from './keystore-bounded.js';
 
 const SERVICE = 'astramem-local';
 const ACCOUNT = 'db-key';
@@ -101,17 +102,75 @@ function scopedService(configDir: string): string {
 // (e.g. headless-Linux fallback) without needing an actual broken OS
 // keychain, and so keystore tests don't have to mutate the developer's
 // real OS credential store as a side effect of `npm test`.
-let EntryCtor: typeof Entry = Entry;
+//
+// DEFAULT is `BoundedEntry` (keystore-bounded.ts), NOT the raw `@napi-rs/keyring`
+// `Entry` (keystore-read-timeout, 2026-08-02 incident): `Entry.getPassword()`/
+// `.setPassword()` are synchronous N-API calls into the OS credential store
+// with no timeout anywhere in the chain — see keystore-bounded.ts's file
+// header for the incident this closes. `BoundedEntry` runs the real call in
+// a killable child process with a hard wall-clock bound, then throws (same
+// as a real `Entry` failure) on timeout — every credential-store touchpoint
+// below (scoped + legacy identities, db-key, bearer, sync-device-token) and
+// everything built on top (doctor checks, CLI commands, serve.ts's boot
+// path) already funnels through `EntryCtor`, so this one swap closes the
+// hang hazard everywhere at once with no other code path changes.
+// `undefined` restores this bounded default, not the raw unbounded `Entry`.
+//
+// Typed as a narrow structural constructor (service, account) => EntryLike
+// rather than `typeof Entry` — `Entry`'s full class type also requires the
+// static `withTarget` method, which `BoundedEntry` deliberately does not
+// implement (nothing in this repo calls it). The EXPORTED test hook below
+// keeps accepting `typeof Entry | undefined` unchanged (every existing
+// test-fake call site already passes `as unknown as typeof Entry`), so this
+// narrowing is invisible to callers.
+type EntryCtorType = new (service: string, account: string) => EntryLike;
+let EntryCtor: EntryCtorType = BoundedEntry;
 
 /** Test-only hook: override (or restore) the credential-store Entry constructor. */
 export function __setEntryCtorForTests(ctor: typeof Entry | undefined): void {
-  EntryCtor = ctor ?? Entry;
+  EntryCtor = (ctor as unknown as EntryCtorType | undefined) ?? BoundedEntry;
+}
+
+// Process-lifetime cache, keyed by normalized configDir (keystore-read-timeout,
+// 2026-08-02 incident follow-up). getOrCreateKey() was ALREADY documented as
+// "idempotent" — same key every call — but had no actual memoization: every
+// call re-attempted the credential store from scratch, which cost nothing
+// when that attempt was a same-thread synchronous throw. Once the bounded
+// child-process boundary (keystore-bounded.ts) went in, a repeat call became
+// genuinely expensive: a live count showed a SINGLE daemon boot calling
+// getOrCreateKey() a dozen-plus times (`openBootDb` once, then every 'cheap'
+// doctor check that touches `openProductionDbReadonly` — ~30 call sites,
+// several on the frequent/boot-immediate tier — each independently re-deriving
+// the same key). Against a genuinely WEDGED (not just erroring) credential
+// store, each of those calls could cost the full ~3x CREDENTIAL_STORE_TIMEOUT_MS
+// worst case — multiplied across a dozen callers, that is minutes of
+// cumulative event-loop-blocking delay, which would have defeated the whole
+// point of bounding any SINGLE call. Caching the resolved result turns every
+// call after the first into a free in-memory lookup, regardless of caller
+// count. Scoped per-process (a fresh `astramem-local` CLI invocation or test
+// process gets its own empty cache) — the underlying credential SOURCE
+// (credential-store vs key-file) is an install-time property that does not
+// legitimately change mid-run, so caching it for a long-lived daemon's
+// lifetime is not a behavior change, only a performance one.
+const keyCache = new Map<string, KeyResult>();
+
+/** Test-only hook: clears the process-lifetime key cache. Real callers never
+ *  need this — a fresh process starts with an empty cache — but a test
+ *  process that calls getOrCreateKey() against the SAME configDir twice,
+ *  expecting the SECOND call to re-derive against mutated stub state (rather
+ *  than reuse the first call's cached result), needs to clear it between
+ *  arrangements. */
+export function __resetKeyCacheForTests(): void {
+  keyCache.clear();
 }
 
 /**
  * Returns the encryption key for this machine/user, creating one on first
  * use. Tries the OS credential store first; falls back to a 0600 key file
  * under `configDir` (with a WARN log) when the credential store throws.
+ * Memoized per (normalized) configDir for the lifetime of this process — see
+ * `keyCache`'s doc comment above for why repeat calls must be free, not just
+ * bounded.
  *
  * NOTE: deviates slightly from the originally-sketched `(configDir) => string`
  * signature — returns `{ key, source }` instead of a bare string so callers
@@ -119,6 +178,10 @@ export function __setEntryCtorForTests(ctor: typeof Entry | undefined): void {
  * duplicate resolution pass. `.key` is what openDb()/migrate-encrypt need.
  */
 export function getOrCreateKey(configDir: string): KeyResult {
+  // ASTRA_MEMORY_TEST_FORCE_KEYFILE bypasses caching entirely — it is
+  // already a fast, deterministic fs read (no credential-store round trip to
+  // amortize), and sandboxed tests using it may legitimately expect a fresh
+  // disk read on every call.
   if (process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE === '1') {
     console.warn(
       '[astramem-local] WARNING: TEST-ONLY key-file bypass active ' +
@@ -127,16 +190,24 @@ export function getOrCreateKey(configDir: string): KeyResult {
     );
     return getOrCreateKeyFile(configDir);
   }
+
+  const cacheKey = normalizeConfigDir(configDir);
+  const cached = keyCache.get(cacheKey);
+  if (cached) return cached;
+
+  let result: KeyResult;
   try {
-    return getOrCreateCredentialStoreKey(configDir);
+    result = getOrCreateCredentialStoreKey(configDir);
   } catch (err) {
     console.warn(
       `[astramem-local] WARNING: OS credential store unavailable (${errMessage(err)}); ` +
       `falling back to a key file with 0600 permissions. This is a weaker guarantee than ` +
       `an OS credential store — see docs/specs/2026-07-02-encryption-and-secret-redaction.md OQ-1.`,
     );
-    return getOrCreateKeyFile(configDir);
+    result = getOrCreateKeyFile(configDir);
   }
+  keyCache.set(cacheKey, result);
+  return result;
 }
 
 function errMessage(err: unknown): string {
@@ -158,10 +229,35 @@ function getOrCreateCredentialStoreKey(configDir: string): KeyResult {
   // NoEntry error on others (per @napi-rs/keyring docs) — treat both as
   // "no key yet", not as "credential store broken". Only the constructor
   // and setPassword() throwing should trigger the key-file fallback.
+  //
+  // CredentialStoreTimeoutError is the one throw we must NOT swallow into
+  // "not found" this way (keystore-read-timeout, 2026-08-02 follow-up): a
+  // fast NoEntry-style throw genuinely means "looked, found nothing" — safe
+  // to treat as not-found and continue toward minting a fresh key. A
+  // TIMEOUT means we asked and got no answer, which tells us NOTHING about
+  // whether a key exists. If a scoped key already exists but this read
+  // specifically timed out (a "vault is slow but alive" scenario —
+  // plausibly still able to accept a WRITE even though the READ didn't
+  // answer in time), treating the timeout as "not found" and proceeding to
+  // mint would OVERWRITE the real, already-in-use key with a fresh random
+  // one — and since the DB was encrypted with the ORIGINAL key, that
+  // overwrite is effectively irreversible data loss (see
+  // CredentialStoreTimeoutError's doc comment, keystore-bounded.ts).
+  //
+  // Deliberately does NOT short-circuit straight to the outer fallback on a
+  // scoped timeout: the legacy identity gets its own independent read
+  // below regardless, because a scoped-read timeout says nothing about
+  // whether the LEGACY read would also be slow — a pre-FEAT-466 install
+  // with a real legacy key deserves the chance to be found even when the
+  // (empty, never-written) scoped identity happens to answer slowly. Only
+  // after BOTH reads have been given a fair, independent chance does a
+  // still-unresolved timeout block the mint (see the check below).
+  let scopedTimedOut = false;
   let existing: string | null;
   try {
     existing = entry.getPassword();
-  } catch {
+  } catch (err) {
+    if (err instanceof CredentialStoreTimeoutError) scopedTimedOut = true;
     existing = null;
   }
   if (existing) {
@@ -171,21 +267,40 @@ function getOrCreateCredentialStoreKey(configDir: string): KeyResult {
   // Read-fallback (AC-2): a pre-FEAT-466 install wrote its key under the
   // legacy unscoped identity. Read-only — never write here, so this never
   // silently duplicates or migrates the secret; the install just keeps
-  // reading the same entry it always has.
+  // reading the same entry it always has. Same timeout-must-not-be-collapsed
+  // reasoning as the scoped read above — a slow legacy read is not evidence
+  // the legacy key is absent, and a legacy HIT here still wins even if the
+  // scoped read above timed out (see this function's doc comment).
+  let legacyTimedOut = false;
   let legacyExisting: string | null;
   try {
     const legacyEntry = new EntryCtor(SERVICE, ACCOUNT);
     legacyExisting = legacyEntry.getPassword();
-  } catch {
+  } catch (err) {
+    if (err instanceof CredentialStoreTimeoutError) legacyTimedOut = true;
     legacyExisting = null;
   }
   if (legacyExisting) {
     return { key: legacyExisting, source: 'credential-store', identity: 'legacy' };
   }
 
-  // Neither identity has a key yet — mint one under the scoped identity.
-  // New installs (and upgraded ones that never had a legacy key) never
-  // write to the legacy identity again.
+  // Neither identity produced a key. If EITHER read timed out, we do not
+  // actually know a key is absent under that identity — only that we
+  // couldn't get an answer in time — so minting here could still silently
+  // overwrite a real key we simply failed to read. Refuse: propagate as a
+  // timeout, which getOrCreateKey's existing outer catch turns into the
+  // (already-tested, already-WARNing) key-file fallback, exactly as a fully
+  // unresponsive store does.
+  if (scopedTimedOut || legacyTimedOut) {
+    throw new CredentialStoreTimeoutError(
+      'credential-store read timed out (scoped and/or legacy identity) — refusing to mint a new key under uncertainty',
+    );
+  }
+
+  // Only reached when BOTH reads genuinely reported "no key" (a fast
+  // NoEntry-style outcome from each, not silence from either). Safe to mint
+  // one under the scoped identity: new installs (and upgraded ones that
+  // never had a legacy key) never write to the legacy identity again.
   const key = generateKeyHex();
   entry.setPassword(key);
   return { key, source: 'credential-store', identity: 'scoped' };

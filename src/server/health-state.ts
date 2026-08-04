@@ -60,6 +60,14 @@ export interface DistillPoisonRateSnapshot {
    *  POISON_RATE_ALARM` — the same gate checkMemoryHealth's ok:false branch
    *  uses, so a fresh install's first couple of poison jobs never trips this. */
   alarmed: boolean;
+  /** Rolling window (days) `poison`/`terminal`/`rate` above were computed
+   *  over (2026-08-02 poison-metric-window fix) — see
+   *  DISTILL_POISON_RATE_WINDOW_DAYS in src/server/queries/memory-health.ts.
+   *  Additive wire field: absent only if an older daemon build's snapshot
+   *  shape were ever cached across a version boundary, which does not
+   *  happen in practice (this snapshot is recomputed in-process every 30s,
+   *  never persisted). */
+  windowDays: number;
 }
 
 /**
