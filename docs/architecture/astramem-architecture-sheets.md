@@ -64,7 +64,152 @@ daemon at all; the captures simply sit in the spool, inert, until a daemon start
 
 ---
 
-## Sheet 02 — Whose keys, and what leaves the machine
+## Sheet 02 — Components
+
+> **Customer asks:** *What are the moving parts, and which ones can I lose?*
+
+One process, one file-backed database, one optional add-on. The boxes below are modules inside the
+daemon, not services — the deliberate consequence is that there is nothing to orchestrate and
+nothing to keep in sync.
+
+```mermaid
+flowchart TB
+  subgraph EDGE["edge"]
+    E1["Fastify HTTP :7777"]
+    E2["MCP server · 21 tools"]
+    E3["dashboard · 7 pages"]
+  end
+
+  subgraph WORK["work"]
+    W1["job worker<br/>500 ms poll · 3 attempts"]
+    W2["distill pipeline<br/>8 stages"]
+    W3["consolidate<br/>merge · contradiction judge"]
+    W4["doctor<br/>50 cheap · 70 full checks"]
+  end
+
+  subgraph PROV["providers — swappable"]
+    P1["LLM<br/>5 providers · 4 BYO presets"]
+    P2["embed<br/>ONNX in-process default"]
+    P3["ASR · astramem-audio<br/>optional npm add-on"]
+  end
+
+  subgraph STORE["storage — one SQLite file"]
+    D1["memories"]
+    D2["memories_vec<br/>sqlite-vec"]
+    D3["memory_events<br/>append-only"]
+    D4["entities · entity_relations"]
+    D5["jobs · transcripts"]
+  end
+
+  subgraph OUT["outbound"]
+    O1["sync shipper → cloud"]
+    O2["sync puller ← cloud"]
+  end
+
+  E1 --> W1
+  E2 --> D1
+  E3 --> D5
+  W1 --> W2
+  W1 --> W3
+  W2 --> P1
+  W2 --> P2
+  P3 -.->|"probed at runtime<br/>absent is fine"| W1
+  W2 --> D1
+  W2 --> D2
+  W2 --> D4
+  D1 --> D3
+  D3 --> O1
+  O2 -.->|"materializes rows"| D1
+  W4 --> D1
+```
+
+**What you can lose without losing the product.** The ASR add-on is a separately versioned npm
+package the daemon *probes for* rather than depends on — absent is a handled state, not a crash.
+Cloud sync is opt-in. The LLM provider is swappable per role. What is **not** optional: the single
+SQLite file, and the single process that owns it.
+
+---
+
+## Sheet 03 — Ingestion connectors
+
+> **Customer asks:** *What can feed this thing besides my coding sessions?*
+
+Nine ways in. Only two are on after a default install — and neither is automatic capture.
+Everything touching third-party speech is consent-gated twice.
+
+```mermaid
+flowchart LR
+  subgraph PLUG["astramem-plugin — external repo"]
+    C1["auto_capture<br/>hook-tap trigger"]
+    C2["hook_close<br/>session-close hook"]
+    C5["meeting_captions<br/>browser extension<br/>Meet · Teams scraper"]
+  end
+
+  subgraph LOCAL["this machine"]
+    C3["proxy<br/>LLM relay capture fork"]
+    C4["audio_transcribe<br/>whisper.cpp on-device"]
+  end
+
+  subgraph DIRECT["direct writes — no distillation"]
+    C6["POST /remember"]
+    C7["MCP remember tool"]
+  end
+
+  subgraph OTHER["other"]
+    C8["distill-events<br/>runner-plugin grades<br/>pre-typed atoms"]
+    C9["sync PULL<br/>cloud create events"]
+  end
+
+  W["POST /ingest/transcript"]
+  SPOOL["ingest spool<br/>on disk"]
+  TR["transcripts table"]
+  JOB["distill job"]
+  DB[("memories")]
+
+  C1 --> W
+  C2 --> W
+  C5 -->|"consent_disclosed<br/>required"| W
+  C3 --> SPOOL --> W
+  C4 --> TR --> JOB
+  C8 -->|"kind: events<br/>skips stages 1–5"| W
+  W --> JOB
+  JOB --> DB
+  C6 --> DB
+  C7 --> DB
+  C9 -.->|"capture_source NULL"| DB
+```
+
+| Connector | Producer | Status |
+|---|---|---|
+| `auto_capture` | plugin hook-tap | off by default |
+| `hook_close` | plugin session-close | shipped |
+| `proxy` | LLM relay capture fork | ⚠️ experimental · release-gated |
+| `audio_transcribe` | whisper.cpp add-on | off · consent-gated |
+| `meeting_captions` | browser extension | off · consent-gated |
+| `distill-events` | runner-plugin | shipped |
+| `POST /remember` | any HTTP caller | always on |
+| MCP `remember` | MCP client | always on |
+| sync PULL | cloud backend | unexercised |
+
+**Audio, precisely.** `astramem-audio` is live on npm (0.2.1, 2026-07-15) and is **file
+transcription only** — on-device whisper.cpp, CPU, model fetched and checksummed on first use. It
+is *not* microphone capture and *not* the meeting scraper. Consent is checked **twice**: at enqueue
+and again at dequeue, so a stale job cannot process audio after consent is revoked.
+
+**🟠 Three paths bypass distillation entirely.** `/remember`, the MCP `remember` tool, and sync PULL
+all insert straight into `memories` with `capture_source = NULL` — no extraction, no typing, no
+gates. Correct for a deliberate save, but it means *"everything in the store came through the
+pipeline"* is **not** a safe assumption when reasoning about quality.
+
+**🔴 Sync pull is a local design choice, not a confirmed contract.** The puller materializes new
+`memories` rows from a cloud event's `atom_snapshot`. The module's own header flags this as a local
+FEAT-407 decision: the astramem-sync@1 wire contract (ADR-003) ships event metadata only and
+explicitly scoped cross-device pull *out* of v1. Whether the live backend emits `atom_snapshot` is
+unverified, and this install is unpaired — the path has never run for real.
+
+---
+
+## Sheet 04 — Whose keys, and what leaves the machine
 
 > **Customer asks:** *Does my source code get sent to somebody's cloud?*
 
@@ -122,7 +267,7 @@ without a paid ChatGPT plan and a completed `codex login`.
 
 ---
 
-## Sheet 03 — The distillation pipeline
+## Sheet 05 — The distillation pipeline
 
 > **Customer asks:** *What actually happens to my transcript?*
 
@@ -193,7 +338,7 @@ uncontested bonus — are wired but ship at zero, pending eval evidence.
 
 ---
 
-## Sheet 04 — From install to first recall
+## Sheet 06 — From install to first recall
 
 > **Customer asks:** *What do I have to do before this is useful?*
 
@@ -240,7 +385,7 @@ default gets a working daemon that captures nothing automatically.
 
 ---
 
-## Sheet 05 — Integration surfaces and who may call them
+## Sheet 07 — Integration surfaces and who may call them
 
 > **Customer asks:** *How does this plug into what we already run?*
 
@@ -290,7 +435,7 @@ flowchart LR
 
 ---
 
-## Sheet 06 — Rough edges to close before customers see this
+## Sheet 08 — Rough edges to close before customers see this
 
 | Edge | Impact | Effort |
 |---|---|---|

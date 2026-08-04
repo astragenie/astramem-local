@@ -872,12 +872,30 @@ async function runDryRunThroughput(): Promise<void> {
 
   const buckets = partitionRoundRobin(sample, effectiveShards);
   console.log(`Shard sizes: ${buckets.map(b => b.length).join(', ')} conversation(s).`);
+  // runShard writes sandbox-config.yaml into this dir as its FIRST filesystem
+  // act, so it has to exist before the shards start. Only `runDir` above was
+  // created, not this `shards-N` child — every --dry-run-throughput invocation
+  // died with ENOENT after ~4ms, and the summary then blamed the distill
+  // timeout (see the failure message below, now corrected too).
+  const shardRoot = join(runDir, `shards-${effectiveShards}`);
+  mkdirSync(shardRoot, { recursive: true });
   const t0 = Date.now();
   const results = await Promise.allSettled(
     buckets.map((samples, i) => runShard({
-      shardIndex: i, totalShards: effectiveShards, samples, runDir: join(runDir, `shards-${effectiveShards}`), concurrency, distillTimeoutMs, k,
+      shardIndex: i, totalShards: effectiveShards, samples, runDir: shardRoot, concurrency, distillTimeoutMs, k,
       azureCfg: null, // ingest+distill only
-      modelOverrides, extractProfile: extractProfileFlag, compactionMode: compactionModeFlag,
+      // Thread EVERY pipeline-shaping flag, exactly as the real run does at
+      // the call site above. This list used to stop at compactionMode, so
+      // --extraction-passes / --passb-sweep / --max-chunk-chars were accepted
+      // on the command line and then silently dropped: a dual-pass throughput
+      // calibration measured single-pass cost. Sizing a metered full-suite run
+      // off that number underestimates the expensive leg by ~2x. If a flag is
+      // added to runShard, add it here as well as to the real call site.
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag,
+      compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag,
+      passBSweep: passBSweepFlag, maxChunkChars: maxChunkCharsFlag,
+      crossEncoderOverride, multiHopOverride, normalization: normalizationFlag,
+      evidenceBundlingOverride,
     })),
   );
   const ms = Date.now() - t0;
@@ -898,6 +916,13 @@ async function runDryRunThroughput(): Promise<void> {
     const fullDatasetQa = dataset.reduce((s, c) => s + c.qa.length, 0);
     const estHours = (fullDatasetSessions * secsPerSession) / 3600;
     console.log(`Extrapolated full dataset (10 conversations, ${fullDatasetSessions} sessions, ${fullDatasetQa} QA pairs): ~${estHours.toFixed(1)}h ingest+distill at this rate, single-threaded-equivalent per shard.`);
+  } else if (failures.length > 0) {
+    // Distinguish "shards crashed" from "shards ran but nothing finished in
+    // time". Blaming the distill timeout for a crash sends the operator off to
+    // double an already-multi-hour timeout while the real error scrolls past
+    // above — which is exactly what happened when the ENOENT above killed
+    // every run after ~4ms and this line still recommended a bigger timeout.
+    console.log(`No sessions completed — ${failures.length} of ${effectiveShards} shard(s) FAILED after ${ms}ms. Fix the shard error above; the distill timeout (${distillTimeoutMs}ms) is not the cause.`);
   } else {
     console.log(`No sessions completed within the ${distillTimeoutMs}ms distill timeout — raise --distill-timeout-ms and retry.`);
   }
