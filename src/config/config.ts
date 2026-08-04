@@ -57,6 +57,28 @@ export interface Config {
      * from sustained bursts. `callsPerMinute <= 0`/undefined = disabled.
      */
     rateLimit?: { callsPerMinute?: number };
+    /**
+     * P0-1: consecutive-429/quota circuit breaker for LLM chat() calls,
+     * applied by buildLLMProvider (src/providers/llm/quota-breaker.ts) and
+     * SHARED per provider name exactly like `rateLimit` above. Motivating
+     * incident: `budget.daily_usd` cannot cap codex-subscription (or ollama)
+     * spend by construction — both hardcode `usage.usd: 0` (see
+     * `src/doctor/checks/budget-cap-codex-blind.ts`) — so a ChatGPT quota
+     * exhaustion (HTTP 429 `usage_limit_reached`) was invisible to the
+     * dollar cap and the worker retried the same exhausted call to poison
+     * (2026-07-31 incident: 198 poisoned distill jobs, ~875 memories lost
+     * until a manual replay days later). Left UNSET here — absent config is
+     * treated as ENABLED at the default threshold (3), fail-safe TOWARD
+     * protection — see `wrapWithQuotaBreaker`'s doc comment
+     * (src/providers/llm/quota-breaker.ts). Once tripped after
+     * `consecutiveFailureThreshold` consecutive quota/429 failures, PAUSES
+     * the affected job (JobRepo.pause — same model as
+     * `DistillBudgetPausedError`) instead of letting it burn attempts toward
+     * poison. `mode: 'off'` restores pre-P0-1 behavior byte-for-byte.
+     * Recovery is manual, via the same `astramem-local budget --reset` flag
+     * that already requeues paused jobs (src/cli/budget.ts).
+     */
+    quotaBreaker?: { mode?: 'off' | 'enabled'; consecutiveFailureThreshold?: number };
   };
   embedding: {
     /** ADR-018 SLICE-1: 'onnx' widened in — an in-process ONNX Runtime
@@ -1579,6 +1601,15 @@ export function defaultConfig(): Config {
       // sub-default.
       compaction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' },
       extraction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' }
+      // P0-1: `quotaBreaker` deliberately left UNSET here, mirroring
+      // `rateLimit` immediately above (an object-valued optional field, once
+      // set, must round-trip through configToYaml's completeness gate — see
+      // tests/config/writer.test.ts — and this one has nothing a fresh
+      // install needs to persist). Leaving it absent still means ON: absent
+      // config reads as enabled at the default threshold — see
+      // `wrapWithQuotaBreaker`'s doc comment (src/providers/llm/quota-breaker.ts)
+      // for why that fallback direction was chosen deliberately (fail-safe
+      // TOWARD protection, not away from it).
     },
     // ADR-018 S4 (2026-07-15): default flipped ollama -> onnx. Model label
     // stays 'mxbai-embed-large' (the same label the ollama default has

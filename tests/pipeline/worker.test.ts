@@ -7,6 +7,7 @@ import { HandlerRegistry } from '../../src/pipeline/registry.js';
 import { startWorker, resolveWorkerConcurrency } from '../../src/pipeline/worker.js';
 import { defaultConfig } from '../../src/config/config.js';
 import { DeterministicError, TransientError } from '../../src/pipeline/errors.js';
+import { wrapWithQuotaBreaker, __resetQuotaBreakersForTest } from '../../src/providers/llm/quota-breaker.js';
 import { distillHandler } from '../../src/pipeline/handlers/distill.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
@@ -638,6 +639,83 @@ describe('Worker + distillHandler (parse-failure retry policy)', () => {
     expect(job.state).toBe('poison');
     expect(job.attempts).toBe(3); // MAX_ATTEMPTS transient retries exhausted
     expect(callCount()).toBe(3);
+
+    const memories = db.prepare('SELECT id FROM memories').all();
+    expect(memories).toHaveLength(0);
+  });
+
+  // ---------------------------------------------------------------------
+  // P0-1: consecutive-429 circuit breaker (2026-07-31 incident: a
+  // codex-subscription quota exhaustion returned HTTP 429
+  // {"type":"usage_limit_reached",...} on every call, and — because
+  // budget.daily_usd cannot meter a provider that hardcodes usage.usd: 0 —
+  // the worker retried the SAME exhausted call to poison, losing ~875
+  // memories across 198 poisoned jobs until a manual replay days later).
+  // This test proves the fix at the exact seam that failed: a 429 storm
+  // through the REAL distillHandler + worker retry loop must PAUSE the job,
+  // never poison it. Run this test against a worker.ts that does not yet
+  // recognize ProviderQuotaBreakerOpenError and it fails (job lands on
+  // 'poison', attempts === 3) — the breaker's own trip-and-throw is
+  // covered in isolation by tests/providers/quota-breaker.test.ts, but only
+  // worker.ts wiring it up to JobRepo.pause() (mirroring the
+  // DistillBudgetPausedError branch immediately above it) makes this pass.
+  // ---------------------------------------------------------------------
+  it('pauses (not poisons) a distill job when the provider quota circuit breaker trips on a 429 storm', async () => {
+    __resetQuotaBreakersForTest();
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    insertSession(sessionId);
+    insertTranscript(transcriptId, sessionId);
+
+    let calls = 0;
+    // Real codex-subscription 429 shape (see codex-subscription.ts's
+    // chat(): `codex-subscription chat failed: HTTP ${res.status} —
+    // ${snippet}`, live-observed snippet `{"type":"usage_limit_reached",
+    // "plan_type":"plus"}`).
+    const rawExtractionLLM: LLMProvider = {
+      name: 'codex-subscription' as const,
+      model: 'gpt-5.4-mini',
+      async chat(): Promise<ChatResult> {
+        calls++;
+        throw new TransientError(
+          'codex-subscription chat failed: HTTP 429 — {"type":"usage_limit_reached","plan_type":"plus"}',
+        );
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'gpt-5.4-mini', latency_ms: 0 }; },
+    };
+    // buildLLMProvider (src/providers/index.ts) applies this decorator to
+    // every real provider it constructs — wired directly here since this
+    // test hand-builds ctx.providers rather than going through
+    // getProviders().
+    const extractionLLM = wrapWithQuotaBreaker(rawExtractionLLM, { mode: 'enabled', consecutiveFailureThreshold: 3 });
+
+    ctx = {
+      db,
+      config: defaultConfig(),
+      providers: { llm: { compaction: makeCompactionLLM(), extraction: extractionLLM }, embed: makeMockEmbed() },
+      memoryRepo: new MemoryRepo(db),
+      vecStore: new SqliteVecStore(db),
+    };
+
+    const id = repo.enqueue('distill', { transcript_id: transcriptId, session_id: sessionId });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig(), ctx });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const job = db.prepare('SELECT state FROM jobs WHERE id = ?').get(id) as { state: string } | undefined;
+      return job?.state === 'paused' || job?.state === 'poison';
+    }, 15_000);
+
+    const job = db.prepare('SELECT state, attempts, last_error FROM jobs WHERE id = ?').get(id) as {
+      state: string; attempts: number; last_error: string | null;
+    };
+    // THE acceptance criterion: a 429 storm must PAUSE the job, never
+    // poison it — poisoning here silently drops the transcript's memories,
+    // exactly like the 2026-07-31 incident.
+    expect(job.state).toBe('paused');
+    expect(job.attempts).toBeLessThan(3); // never reached MAX_ATTEMPTS — pause does not burn the tripping attempt
+    expect(job.last_error).toContain('quota circuit breaker OPEN');
+    expect(calls).toBe(3); // 2 normal retries + the 3rd call that tripped the breaker
 
     const memories = db.prepare('SELECT id FROM memories').all();
     expect(memories).toHaveLength(0);

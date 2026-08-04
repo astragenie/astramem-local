@@ -11,6 +11,7 @@ import { CodexSubscriptionLLMProvider } from './llm/codex-subscription.js';
 import { AnthropicLLMProvider } from './llm/anthropic.js';
 import { rateLimitLLMProvider } from './llm/rate-limited.js';
 import { trackProviderHealth } from './llm/health-tracking.js';
+import { wrapWithQuotaBreaker } from './llm/quota-breaker.js';
 import { OllamaEmbedProvider } from './embed/ollama.js';
 import { AzureOpenAIEmbedProvider } from './embed/azure-openai.js';
 import { OnnxWorkerHostProvider } from './embed/onnx-worker-host.js';
@@ -108,6 +109,16 @@ export function buildLLMProvider(
   // provider we build (token bucket SHARED per provider name — see
   // rateLimitLLMProvider). Disabled (pass-through) unless llm.rateLimit is set.
   //
+  // P0-1: quota circuit breaker wraps the rate-limited provider (see
+  // src/providers/llm/quota-breaker.ts's file doc comment) — placed OUTSIDE
+  // rateLimitLLMProvider so a tripped breaker short-circuits before even
+  // acquiring a rate-limit token, and INSIDE trackProviderHealth so the
+  // health registry keeps observing real chat() outcomes (a tripped
+  // breaker's own synthetic error still classifies as 'quota', which is an
+  // accurate reflection of "still down for quota reasons"). Same single
+  // wiring point as the other two decorators — every role built through this
+  // function is covered with zero extra plumbing.
+  //
   // FEAT-538: also wrap in the chat()-observing health tracker, unconditionally
   // (unlike rate limiting, this is always on — there's no opt-out config, the
   // same way embed/worker health always report). trackProviderHealth resolves
@@ -117,9 +128,12 @@ export function buildLLMProvider(
   // judge, extractionPassB, atomTriage, and one-off callers like
   // src/search/decompose.ts) without any daemon-boot (serve.ts) changes.
   return trackProviderHealth(
-    rateLimitLLMProvider(
-      buildRawLLMProvider(providerName, model, config, opts),
-      config.llm.rateLimit?.callsPerMinute,
+    wrapWithQuotaBreaker(
+      rateLimitLLMProvider(
+        buildRawLLMProvider(providerName, model, config, opts),
+        config.llm.rateLimit?.callsPerMinute,
+      ),
+      config.llm.quotaBreaker,
     ),
   );
 }
