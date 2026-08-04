@@ -337,8 +337,59 @@ export interface StepResult {
   soft?: boolean;
 }
 
-async function stopRunningDaemon(dataDir: string, port: number): Promise<StepResult> {
-  const result = await stopLockHolder(dataDir, port);
+/**
+ * Stop whatever currently owns `dataDir` before repointing/restarting
+ * (reinstall stale-lock false-fail root cause, repro'd 2/2 on this box).
+ *
+ * Root cause: the win32 daemon task is registered with
+ * `MultipleInstancesPolicy=IgnoreNew` (task-xml.ts) — a deliberate
+ * anti-pile-up guard for the PT5M keepalive. Task Scheduler decides "is this
+ * task still running" by watching whether the process IT directly launched
+ * (the hidden-VBS wrapper → cmd → launch.cjs, see shim.ts) has exited, NOT
+ * by asking us. `stopLockHolder` below kills the actual daemon by PID
+ * directly (needed because `adapter.stop()` alone can't reliably reach it —
+ * see that function's own doc comment), which cascades back up through
+ * launch.cjs's blocking `spawnSync` to the wrapper eventually exiting too —
+ * but that cascade, plus Task Scheduler's own detection of it, is real
+ * wall-clock time. If the reinstall flow's later `adapter.start()`
+ * (`schtasks /run`) races ahead of that detection, `IgnoreNew` makes `/run`
+ * a SILENT NO-OP: no new daemon process is ever spawned, `daemon.lock` is
+ * never rewritten, and `waitForHealthWithBootGrace` eventually times out
+ * pointing at the pre-existing dead PID as if it were live evidence of a
+ * hang — even though nothing is wrong with the new release at all.
+ *
+ * Fix: end the scheduler's own task/unit FIRST, exactly like `service stop`
+ * already does (cli/service.ts) — `schtasks /end` updates Task Scheduler's
+ * "running" bookkeeping synchronously as part of that call, so the
+ * subsequent `adapter.start()` can never race it. Best-effort: schtasks
+ * errors loudly when the task isn't currently "running" (a normal/expected
+ * outcome here — e.g. the daemon.lock holder may already be confirmed dead
+ * before this ever runs), and on first install there is no task to end at
+ * all yet. `stopLockHolder` remains the real, idempotent success signal.
+ *
+ * Exported (alongside `restorePriorPointer`) so this specific behavior —
+ * adapter-stop-before-PID-kill ordering — is directly unit-testable without
+ * driving a real OS scheduler; `reinstallCommand` itself stays untested in
+ * isolation for the reasons this file's header comment already explains.
+ */
+export async function stopRunningDaemon(
+  dataDir: string,
+  port: number,
+  opts: {
+    /** Injectable adapter-stop — tests substitute a spy instead of shelling out to schtasks/systemctl/launchctl. */
+    adapterStopImpl?: () => Promise<void>;
+    /** Injectable stopLockHolder — tests substitute a stub instead of a real PID signal/health probe. */
+    stopLockHolderImpl?: typeof stopLockHolder;
+  } = {},
+): Promise<StepResult> {
+  const adapterStop = opts.adapterStopImpl ?? (() => getServiceAdapter().stop());
+  const stopLockHolderFn = opts.stopLockHolderImpl ?? stopLockHolder;
+
+  try {
+    await adapterStop();
+  } catch { /* best-effort — see doc comment above */ }
+
+  const result = await stopLockHolderFn(dataDir, port);
   return { step: 'stop-daemon', ok: result.ok, detail: result.detail };
 }
 

@@ -11,6 +11,16 @@ name: Auto-merge on green
 # Runs on the self-hosted runner so it never consumes GitHub-hosted Actions
 # minutes on this private repo (org runs a $0 hosted-spend budget). Uses
 # actions/github-script (GraphQL) so no `gh` binary is required on the host.
+#
+# The arm/disarm GraphQL calls fail the job on any error except a small
+# explicit allow-list of "already in the desired state" cases (see the
+# script below) — this job used to swallow every mutation error behind
+# core.warning, which is how a silently-expired AUTOMERGE_PAT ran green on
+# every PR for an unknown period while "Bad credentials" was thrown and
+# discarded on every single arm attempt (found 2026-08-02: repo's
+# allow_auto_merge was already true, so nothing merged and nothing looked
+# broken until someone read the raw logs). This workflow is still not a
+# required check, so a red run here never blocks a manual merge.
 
 on:
   pull_request:
@@ -67,6 +77,31 @@ jobs:
             const pr = context.payload.pull_request;
             const held = pr.labels.some(l => ['hold', 'do-not-merge'].includes(l.name));
 
+            // Only these two GraphQL error strings mean "already in the desired
+            // state" — genuinely benign, not a failure to act on. Everything
+            // else (bad/expired credentials, missing scopes, rate limits, an
+            // unknown PR id, ...) is a REAL failure and must fail the job
+            // loudly. This used to be a blanket try/catch + core.warning, which
+            // is exactly how a silently-expired AUTOMERGE_PAT went unnoticed:
+            // every single arm attempt threw "Bad credentials" and the run
+            // still showed green, so no PR ever auto-merged and nothing said
+            // why (found 2026-08-02 auditing why zero PRs had autoMergeRequest
+            // set despite this job passing on every run).
+            const BENIGN_DISABLE_SUBSTRINGS = [
+              'Auto merge is not enabled for this pull request', // already disarmed
+            ];
+            const BENIGN_ENABLE_SUBSTRINGS = [
+              'Pull request is in clean status', // already mergeable now, nothing to wait for
+              'Pull request is already merged',  // race: merged before we got here
+            ];
+
+            function reportFailure(action, e) {
+              const hint = e.message.includes('Bad credentials')
+                ? ' — AUTOMERGE_PAT is set but GitHub is rejecting it (expired, revoked, or wrong scopes). Rotating it is an operator action (repo admin creates a new PAT/App token and updates the secret); this workflow cannot fix it.'
+                : '';
+              core.setFailed(`${action} auto-merge failed: ${e.message}${hint}`);
+            }
+
             if (pr.draft || held) {
               core.info(`#${pr.number} is ${pr.draft ? 'draft' : 'held'} — disabling auto-merge.`);
               try {
@@ -77,7 +112,11 @@ jobs:
                   { id: pr.node_id }
                 );
               } catch (e) {
-                core.info(`disable no-op: ${e.message}`);
+                if (BENIGN_DISABLE_SUBSTRINGS.some(s => e.message.includes(s))) {
+                  core.info(`disable no-op (benign): ${e.message}`);
+                } else {
+                  reportFailure('disable', e);
+                }
               }
               return;
             }
@@ -92,7 +131,9 @@ jobs:
               );
               core.info('Auto-merge enabled — will merge when required checks pass.');
             } catch (e) {
-              // Common benign cases: PR already mergeable with no required checks,
-              // or already enabled. Warn, don't fail the run.
-              core.warning(`enable auto-merge failed: ${e.message}`);
+              if (BENIGN_ENABLE_SUBSTRINGS.some(s => e.message.includes(s))) {
+                core.info(`enable no-op (benign): ${e.message}`);
+              } else {
+                reportFailure('enable', e);
+              }
             }

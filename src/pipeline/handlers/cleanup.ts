@@ -6,14 +6,19 @@ import { pruneIngestIdempotency } from '../../storage/ingest-idempotency.js';
 import { runImplicitPositivePass, pruneOldRecallServedEvents } from '../../storage/usefulness.js';
 import { runRetentionPass, writeSweepStats } from '../../storage/retention.js';
 import { MemoryRepo } from '../../storage/memories.js';
-import { JobRepo } from '../job-repo.js';
+import { JobRepo, POISON_JOB_RETENTION_DAYS } from '../job-repo.js';
 
 /**
  * Cleanup handler — IMPLEMENTED.
  *
  * Prunes jobs in the 'completed' state whose updated_at is older than
- * `older_than_days` (default 30). Other states (pending, running, failed,
- * poison, paused) are never touched so the operator can inspect them.
+ * `older_than_days` (default 30), and jobs in the 'poison' state older than
+ * `POISON_JOB_RETENTION_DAYS` (90d — see job-repo.ts for the
+ * forensic-retention rationale) via the shared `JobRepo.purgeOld()` — the
+ * same call the daemon's boot-time purge (src/cli/serve.ts) uses, so there
+ * is one retention policy, not two independently-drifting ones. Other
+ * states (pending, running, failed, paused) are never touched so the
+ * operator can inspect them.
  *
  * Also runs the memory TTL/archival policy pass (FEAT-404) on the same
  * cadence — config.archival.enabled === false (the default) makes it a
@@ -73,27 +78,21 @@ export const cleanupHandler: JobHandler = {
     }
 
     const { older_than_days } = parsed.data;
-    const cutoffMs = Date.now() - older_than_days * 24 * 60 * 60 * 1000;
 
-    const result = ctx.db.prepare(`
-      DELETE FROM jobs
-      WHERE state = 'completed'
-        AND updated_at < ?
-    `).run(cutoffMs);
-
-    // Poison jobs are kept 30 days for `queue` forensics, then purged —
-    // without this they accumulate forever (nothing else ever re-reads them).
-    const POISON_RETENTION_DAYS = 30;
-    const poisonCutoffMs = Date.now() - POISON_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-    const poisonResult = ctx.db.prepare(`
-      DELETE FROM jobs
-      WHERE state = 'poison'
-        AND updated_at < ?
-    `).run(poisonCutoffMs);
+    // Single-sourced via JobRepo.purgeOld (2026-08-02 poison-metric-window
+    // fix) rather than two independent hand-rolled DELETEs — this used to
+    // duplicate job-repo.ts's own retention logic with its own
+    // POISON_RETENTION_DAYS=30 literal, which could silently drift out of
+    // sync with the boot-time purge's default (see purgeOld's doc comment).
+    // completed uses the payload-configurable `older_than_days`; poison uses
+    // the shared POISON_JOB_RETENTION_DAYS constant (job-repo.ts has the
+    // forensic-retention rationale).
+    const jobRepo = new JobRepo(ctx.db);
+    const purged = jobRepo.purgeOld({ completedDays: older_than_days, poisonDays: POISON_JOB_RETENTION_DAYS });
 
     console.log(
-      `${ts()} [cleanup] pruned ${result.changes} completed job(s) older than ${older_than_days} day(s), ` +
-      `${poisonResult.changes} poison job(s) older than ${POISON_RETENTION_DAYS} day(s)`,
+      `${ts()} [cleanup] pruned ${purged.completed} completed job(s) older than ${older_than_days} day(s), ` +
+      `${purged.poison} poison job(s) older than ${POISON_JOB_RETENTION_DAYS} day(s)`,
     );
 
     const archival = runArchivalPass(ctx.db, ctx.config);
@@ -165,7 +164,6 @@ export const cleanupHandler: JobHandler = {
     // at this volume (13 in production today) and simpler than tracking
     // per-memory in-flight state.
     const memRepo = new MemoryRepo(ctx.db);
-    const jobRepo = new JobRepo(ctx.db);
     const needingIndex = memRepo.listNeedingVecIndex(VEC_INDEX_SWEEP_LIMIT);
     for (const memoryId of needingIndex) {
       jobRepo.enqueue('reembed', { kind: 'reembed', memory_id: memoryId });
