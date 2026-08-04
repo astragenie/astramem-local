@@ -4,6 +4,7 @@ import type { HandlerCtx } from './handler.js';
 import type { HandlerRegistry } from './registry.js';
 import { JobRepo, LOCAL_SQLITE_KINDS } from './job-repo.js';
 import { DistillBudgetPausedError } from './handlers/distill.js';
+import { ProviderQuotaBreakerOpenError } from '../providers/llm/quota-breaker.js';
 import { classifyError } from './failure-classifier.js';
 import { TransientError } from './errors.js';
 import { logger, childLogger } from '../log/logger.js';
@@ -231,6 +232,26 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
           repo.pause(job.id);
           jobLog.warn({ error_message: errMsg, error_kind: 'BudgetPaused' }, 'job paused — budget exceeded');
           recordHandlerRun(db, { handler: job.kind, status: 'paused', durationMs, errorType: 'BudgetPaused', errorMessage: errMsg });
+          scheduleNext();
+          return;
+        }
+
+        // P0-1: quota circuit breaker tripped (consecutive 429/quota
+        // failures from an LLM provider — see
+        // src/providers/llm/quota-breaker.ts) → pause the same way as
+        // BudgetExceeded above, for the SAME reason: do NOT call fail(),
+        // that would increment attempts and risk poisoning a job whose only
+        // problem is an exhausted provider quota, not a bad job. Applies to
+        // every job kind that flows an LLM call through a provider built via
+        // buildLLMProvider (src/providers/index.ts) — not distill-specific,
+        // mirroring JobRepo.requeuePaused()'s deliberately job-kind-agnostic
+        // design. Recovery is the same `astramem-local budget --reset` path.
+        if (ProviderQuotaBreakerOpenError.is(err)) {
+          const errMsg = err.message;
+          repo.setLastError(job.id, errMsg);
+          repo.pause(job.id);
+          jobLog.warn({ error_message: errMsg, error_kind: 'ProviderQuotaBreakerOpen' }, 'job paused — provider quota circuit breaker open');
+          recordHandlerRun(db, { handler: job.kind, status: 'paused', durationMs, errorType: 'ProviderQuotaBreakerOpen', errorMessage: errMsg });
           scheduleNext();
           return;
         }

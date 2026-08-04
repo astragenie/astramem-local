@@ -22,6 +22,7 @@ import { createHealthState, type HealthState } from '../../src/server/health-sta
 import { defaultConfig, type Config } from '../../src/config/config.js';
 import { getProviders } from '../../src/providers/index.js';
 import { __resetProviderHealthRegistryForTest } from '../../src/providers/llm/health-tracking.js';
+import { __resetQuotaBreakersForTest } from '../../src/providers/llm/quota-breaker.js';
 
 /** Mocks globalThis.fetch to return `statuses[]` in sequence (repeating the
  *  last entry once exhausted) — Ollama chat-shaped 200 body on success,
@@ -70,6 +71,14 @@ describe('GET /health — provider regression -> degraded (FEAT-538)', () => {
     healthState.embed.ok = true; // isolate the provider/poison-rate gates from the embed gate
     originalFetch = globalThis.fetch;
     __resetProviderHealthRegistryForTest();
+    // P0-1: buildLLMProvider (src/providers/index.ts) now also wraps every
+    // provider in the quota circuit breaker (src/providers/llm/quota-breaker.ts),
+    // which this file's real getProviders() wiring exercises too — reset its
+    // module-level per-provider-name state the same way the health registry
+    // above is reset, or a 3x-429 test earlier in this file trips the
+    // breaker for 'ollama' and leaks a permanent ProviderQuotaBreakerOpenError
+    // into every later test that reuses that provider name.
+    __resetQuotaBreakersForTest();
   });
 
   afterEach(async () => {
@@ -119,6 +128,7 @@ describe('GET /health — provider regression -> degraded (FEAT-538)', () => {
 
     // Fresh state for the 429 case — quota-flavored wording, distinct from auth.
     __resetProviderHealthRegistryForTest();
+    __resetQuotaBreakersForTest();
     healthState = createHealthState();
     healthState.ready = true;
     healthState.embed.ok = true;
