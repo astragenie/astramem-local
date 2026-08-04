@@ -84,6 +84,28 @@ evidence (see the hypothesis ledger: `docs/research/20260714-locomo-hypothesis-l
   notes). **Zep's 0.947 is unreproducible marketing** (not in arXiv; their own OSS harness = 0.803). Full
   detail: LEDGER rows 2026-07-23/24 (★) + `docs/research/20260723-mem0-zep-locomo-harness-extraction.md`.
 
+## Eval archive now survives worktree deletion (P0-3, fixed 2026-08-04)
+
+`scripts/eval/locomo/archive-run.mts` used to resolve its `docs/eval-runs/` destination relative to
+`process.cwd()`. Eval sandboxes routinely run inside a throwaway git worktree, so a run archived
+from one wrote into *that worktree's own* uncommitted `docs/eval-runs/` copy — real bytes on disk
+that vanished the moment the worktree was deleted. This is exactly how this repo lost its two
+headline LoCoMo numbers: the **0.5549** dual-pass full-suite result cited in
+`src/config/config.ts:1780-1789`/`:1043` as the justification for shipping `extractionPasses: 2`
+by default, and the **0.6002** conv-1 champion (`docs/eval-runs/README.md` records it as "run dir
+deleted"). Both are permanently unreproducible-as-run; this fix stops a third one happening.
+
+Fixed by resolving the archive root via `git rev-parse --path-format=absolute --git-common-dir`
+(shared across every worktree of one repo — its parent dir is always the PRIMARY checkout, whether
+called from the primary checkout itself or any linked worktree, no special-casing needed) instead
+of cwd. The script now also prints the resolved score next to the absolute archive path on every
+run, and refuses to archive anything (exit 1, loud error) if that resolution fails, rather than
+silently reporting success for a path that might not survive — same fail-loud convention as
+ADR-015's rate canary and the `auto-merge.yml` preflight. Regression test:
+`scripts/eval/locomo/archive-run.test.ts` (builds an isolated throwaway git repo + linked worktree,
+archives from the worktree, deletes the worktree, asserts the archive survives under the primary
+checkout — fails on the pre-fix code).
+
 ## Known open gaps (updated 2026-07-16, re-verify before quoting)
 
 - **Doctor DOES run unattended** — a **frequent 15-min** pass runs every `tier: 'cheap'` check

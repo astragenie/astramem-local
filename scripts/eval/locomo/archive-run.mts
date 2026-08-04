@@ -10,9 +10,51 @@
  * Copies: run-manifest.json, run-params.json, <run>.metrics.json (if judged),
  * every sandbox-config.yaml. Appends a one-line row to docs/eval-runs/LEDGER.md.
  * Idempotent per --name (re-archiving overwrites the same folder).
+ *
+ * P0-3 (2026-08-04): the destination used to be `docs/eval-runs` resolved
+ * relative to `process.cwd()`. Run this from inside a throwaway git
+ * worktree (which is exactly where eval sandboxes live) and the archive
+ * lands in THAT worktree's own copy of docs/eval-runs/ — real bytes on
+ * disk, but never committed, so deleting the worktree erases them
+ * silently. This repo already lost two headline LoCoMo numbers this way:
+ * the 0.5549 dual-pass number cited in src/config/config.ts:1780-1789 as
+ * the justification for shipping extractionPasses:2, and the 0.6002
+ * conv-1 champion recorded in docs/eval-runs/README.md as "run dir
+ * deleted". Fixed by resolving the destination to the PRIMARY checkout via
+ * `git rev-parse --git-common-dir` (shared across every worktree of one
+ * repo) instead of cwd — see resolveMainWorktreeRoot() below. If that
+ * resolution fails, this script refuses to archive anything and exits
+ * non-zero rather than silently writing to (and reporting success for) a
+ * path that might not survive — loud failure is this repo's convention
+ * (ADR-015's rate canary, auto-merge.yml's fail-loud preflight) precisely
+ * because a quiet skip once hid a real problem for weeks.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, statSync, appendFileSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, dirname } from 'node:path';
+import { execSync } from 'node:child_process';
+
+/**
+ * Resolve the root of the PRIMARY (non-worktree) checkout, so archived
+ * evidence survives deletion of whatever worktree this script happens to be
+ * invoked from. `git rev-parse --path-format=absolute --git-common-dir`
+ * returns the one shared `.git` dir for every worktree of a repo: from the
+ * primary checkout that's `<root>/.git` (parent = the checkout root); from
+ * a linked worktree it's STILL `<root>/.git` of the primary checkout
+ * (parent = that same primary root, not the worktree). Same formula
+ * either way — no special-casing needed between the two.
+ */
+export function resolveMainWorktreeRoot(cwd: string = process.cwd()): string {
+  let commonDir: string;
+  try {
+    commonDir = execSync('git rev-parse --path-format=absolute --git-common-dir', { cwd, encoding: 'utf8' }).trim();
+  } catch (err) {
+    throw new Error(`could not resolve the primary git checkout from ${cwd} (git rev-parse --git-common-dir failed: ${(err as Error).message})`);
+  }
+  if (!commonDir) {
+    throw new Error(`git rev-parse --git-common-dir returned nothing for ${cwd}`);
+  }
+  return dirname(commonDir);
+}
 
 const args = process.argv.slice(2);
 const get = (flag: string): string | undefined => {
@@ -31,7 +73,16 @@ if (!existsSync(runDir)) {
   process.exit(1);
 }
 
-const destRoot = join('docs', 'eval-runs');
+let mainRoot: string;
+try {
+  mainRoot = resolveMainWorktreeRoot();
+} catch (err) {
+  console.error(`archive-run: ${(err as Error).message}`);
+  console.error('Refusing to archive — a lost archive path is exactly how this repo lost two headline LoCoMo numbers already (see docs/eval-runs/README.md).');
+  process.exit(1);
+}
+
+const destRoot = join(mainRoot, 'docs', 'eval-runs');
 const dest = join(destRoot, name);
 mkdirSync(dest, { recursive: true });
 
@@ -91,5 +142,11 @@ if (!existsSync(ledger)) {
 const today = new Date().toISOString().slice(0, 10);
 appendFileSync(ledger, `| ${today} | [${name}](${name}/) | ${score} | ${n} | ${params} |\n`);
 
+// dest/ledger are joined off mainRoot, which resolveMainWorktreeRoot()
+// returns absolute (git rev-parse --path-format=absolute) — so these are
+// already durable, worktree-independent paths, not cwd-relative ones. A
+// score line printed without this path next to it is how this got lost
+// the first two times (see file header) — always print both together.
+console.log(`score: ${score}${n ? ` (n=${n})` : ''}`);
 console.log(`archived ${copied.length} files -> ${dest}`);
 console.log(`ledger row appended -> ${ledger}`);
