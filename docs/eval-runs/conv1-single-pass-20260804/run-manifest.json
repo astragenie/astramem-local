@@ -1,0 +1,136 @@
+{
+  "run_dir": ".eval-data/locomo/runs/conv1-single-20260804",
+  "config": {
+    "datasetPath": ".eval-data/locomo/locomo10.json",
+    "n": 1,
+    "seed": 42,
+    "k": 15,
+    "concurrency": 4,
+    "distillTimeoutMs": 1800000,
+    "shards": 1,
+    "answererDeployment": "gpt-5-mini",
+    "models": {
+      "extraction": "gpt-5.4-mini",
+      "compaction": "gpt-5.4-mini",
+      "extractionProvider": "codex-subscription",
+      "compactionProvider": "codex-subscription"
+    },
+    "extractProfile": "conversational",
+    "crossEncoder": {
+      "enabled": false
+    },
+    "normalization": "minmax",
+    "evidenceBundling": {
+      "enabled": false
+    },
+    "diagnosed": false,
+    "extractionPasses": 1,
+    "compactionMode": "never",
+    "extractionPassB": "inherited-default",
+    "passBSweep": "tuned-default",
+    "maxChunkChars": "inherited-default",
+    "extractPromptEnv": null,
+    "passBTuning": {
+      "sweepOnlyBelowAtoms": 8,
+      "maxTokens": 1500,
+      "numCtxCap": 8192
+    },
+    "runConstants": {
+      "chunking": {
+        "maxChunkChars": 3200,
+        "targetTokensEnv": null
+      },
+      "extraction": {
+        "temperature": 0.1,
+        "tempEnv": null,
+        "passAMaxTokens": 6000,
+        "promptEnv": null,
+        "defaultPasses": 2
+      },
+      "passBTuning": {
+        "sweepOnlyBelowAtoms": 8,
+        "maxTokens": 1500,
+        "numCtxCap": 8192,
+        "shippedDefaults": {
+          "sweepOnlyBelowAtoms": 8,
+          "maxTokens": 1500,
+          "numCtxCap": 8192
+        }
+      },
+      "ollamaNumCtx": {
+        "formula": "clamp(inputChars/4 + maxTokens + 512, 4096, min(16384, provider numCtxCap))",
+        "charsPerToken": 4,
+        "floor": 4096,
+        "cap": 16384
+      },
+      "embedding": {
+        "defaultProvider": "onnx",
+        "defaultModel": "mxbai-embed-large",
+        "dim": 1024
+      },
+      "configDefaults": {
+        "compactionModel": "codex-subscription/gpt-5.4-mini",
+        "extractionModel": "gpt-5.4-mini",
+        "extractionProvider": "codex-subscription",
+        "atomTriageMode": "off",
+        "gatekeeperMode": "off",
+        "compactionMode": "never",
+        "chunkConcurrency": 3
+      },
+      "codexDeadKnobs": [
+        "temperature",
+        "maxTokens (pass-A ceiling + pass-B tuning cap)"
+      ],
+      "promptHashes": {
+        "v3": "fd199d0f27b8",
+        "conversational": "d10cc3f62cca",
+        "convLiberal": "351f4bd941d1",
+        "convSpkbal": "acf219d38dc7",
+        "specificsSweeper": "da9370e68f72"
+      },
+      "promptVersions": {
+        "v3": "eng-v3.0 (FEAT-479, 2026-07-13)",
+        "conversational": "conv-v1.1 (FEAT-485; relations[] added, retrieval-overhaul Phase 6, 2026-07-20)",
+        "convLiberal": "conv-liberal-v1.0 (2026-07-18 champion prompt)",
+        "convSpkbal": "conv-spkbal-v1.0 (Wave-5 extraction-score track, 2026-07-23 — A/B candidate, unmeasured)",
+        "specificsSweeper": "sweeper-v2.0 (552-A evidence-first restructure, 2026-07-18)"
+      },
+      "sweeperPromptEnv": null,
+      "ollamaEnv": {
+        "OLLAMA_FLASH_ATTENTION": "",
+        "OLLAMA_KV_CACHE_TYPE": "",
+        "OLLAMA_NUM_PARALLEL": "1",
+        "OLLAMA_MAX_LOADED_MODELS": "",
+        "OLLAMA_KEEP_ALIVE": ""
+      }
+    },
+    "gitState": {
+      "sha": "7c10fe8c",
+      "srcDirty": false
+    }
+  },
+  "counts": {
+    "sampled_conversations": 1,
+    "sampled_qa": 199,
+    "sessions_total": 19,
+    "ingest_ok": 19,
+    "ingest_failed": 0,
+    "distill_ready": 1,
+    "distill_timed_out": 0
+  },
+  "timings": {
+    "load_dataset_ms": 7,
+    "shards_wall_clock_ms": 500040,
+    "total_ms": 502795
+  },
+  "per_shard_timings": {
+    "shard_0": {
+      "daemon_boot_ms": 2347,
+      "ingest_ms": 54,
+      "distill_wait_ms": 407555,
+      "answer_ms": 90014
+    }
+  },
+  "failed_shards": [],
+  "timed_out_sample_ids": []
+}

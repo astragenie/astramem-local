@@ -1,0 +1,8 @@
+{
+  "datasetHash": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+  "datasetPath": ".eval-data/locomo/locomo10.json",
+  "n": 1,
+  "qaPerSample": null,
+  "seed": 42,
+  "shards": 1
+}
