@@ -63,10 +63,10 @@ export function checkMemoryHealth(dataDir: string, encryptionEnabled: boolean): 
             ok: false,
             message:
               `memory health: ${distill.poison} of ${distill.terminal} terminal distill sessions ` +
-              `(${(distill.poisonRate * 100).toFixed(1)}%) permanently poisoned — at/above the ` +
-              `${(POISON_RATE_ALARM * 100).toFixed(0)}% alarm floor. A well-formed but broken ` +
-              `extraction pipeline looks identical to a run of genuinely bad transcripts without ` +
-              `this counter.`,
+              `in the last ${distill.windowDays}d (${(distill.poisonRate * 100).toFixed(1)}%) ` +
+              `permanently poisoned — at/above the ${(POISON_RATE_ALARM * 100).toFixed(0)}% alarm ` +
+              `floor. A well-formed but broken extraction pipeline looks identical to a run of ` +
+              `genuinely bad transcripts without this counter.`,
             fix:
               'Run `astramem-local doctor` for the LLM chat probe result and `astramem-local queue` to ' +
               'inspect poisoned sessions — a broken model/config produces this shape, not bad transcripts alone.',
@@ -90,8 +90,9 @@ export function checkMemoryHealth(dataDir: string, encryptionEnabled: boolean): 
           message:
             `memory health: ${report.activeCount} active / ${report.archivedCount} archived — ` +
             `usefulness coverage ${coverageStr}, correction rate ${correctionStr}, ` +
-            `${report.poisonDistillSessions} poison-distill session(s) (${distill.poison}/${distill.terminal} ` +
-            `terminal), staleness [${staleTop}]`,
+            `${report.poisonDistillSessions} poison-distill session(s) lifetime ` +
+            `(${distill.poison}/${distill.terminal} terminal in the last ${distill.windowDays}d), ` +
+            `staleness [${staleTop}]`,
         };
       } catch (err) {
         // The query itself failed — did not verify memory health.

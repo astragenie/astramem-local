@@ -197,6 +197,33 @@ export interface ConsolidateOpts {
    * itself, applied to the phase that used to have none at all. Default 500.
    */
   setupYieldEveryNAtoms?: number;
+  /**
+   * FEAT-482 (worker-starvation wave, item 2/3 — the one item the fold
+   * didn't close, see `queue-liveness-starvation.test.ts`'s doc comment):
+   * checked at the SAME cadence as the existing cooperative yield points
+   * (setup atoms-load pages, setup per-group embedding-map build, pair
+   * scan) — never on its own timer, so it adds no overhead beyond what
+   * those checkpoints already pay. When it returns true, the run stops at
+   * the current safe checkpoint (never mid-transaction — same invariant
+   * `yieldEveryNPairs`'s doc comment already relies on) instead of running
+   * to completion, exactly like a `setupBudgetMs` timeout: partial
+   * progress is kept (already-committed merges/proposals are real), the
+   * run is logged loudly (`summary.preemptedForHigherPriority = true`),
+   * and the remainder is picked up on the next scheduled pass (consolidate
+   * re-enqueues itself every 6h — see serve.ts) rather than starving a
+   * newly-arrived higher-priority job.
+   *
+   * This closes the residual gap priority tiers alone couldn't:
+   * `JobRepo.claimPending()`'s tier ordering only helps a job that is
+   * still PENDING at claim time — once a `consolidate` job is already
+   * `running`, nothing today lets a burst of P1 work interrupt it. The
+   * production wiring (`consolidateHandler`) passes
+   * `() => jobRepo.hasPendingAbovePriority(JOB_PRIORITY.consolidate)`;
+   * omitted (every caller without queue visibility — one-shot CLI runs,
+   * most existing tests) is byte-identical to pre-FEAT-482 behavior —
+   * never preempts.
+   */
+  preemptIfHigherPriorityPending?: () => boolean;
 }
 
 export interface ConsolidateSummary {
@@ -246,6 +273,27 @@ export interface ConsolidateSummary {
    * `ConsolidateOpts.setupBudgetMs`'s doc comment.
    */
   setupBudgetExceeded: boolean;
+  /**
+   * FEAT-482 (worker-starvation wave, item 2/3): true when
+   * `preemptIfHigherPriorityPending` returned true at some checkpoint
+   * before the scan finished — the run stopped early so the worker lane
+   * could claim the now-pending higher-priority job. See
+   * `ConsolidateOpts.preemptIfHigherPriorityPending`'s doc comment.
+   * Independent of `setupBudgetExceeded` — a run can hit either, both (in
+   * sequence), or neither. Always `false` when the option was omitted.
+   */
+  preemptedForHigherPriority: boolean;
+  /**
+   * FEAT-482 review fix (PR #463): true when this run persisted a resume
+   * cursor because it stopped early (ceiling hit, setup budget exceeded,
+   * or preemption) — regardless of whether `maxCandidatePairsPerRun` was
+   * configured. Lets a caller/test distinguish "stopped early, but the
+   * next pass resumes further into the corpus" from "stopped early at the
+   * identical spot every time" (previously unobservable — see PR #463
+   * review finding 1). `false` on a run that either completed in full or
+   * never stopped early at all.
+   */
+  resumeCursorUpdated: boolean;
   /**
    * FEAT-482: true when `contradictionDetection.maxWallClockMs` elapsed
    * before the scan finished — a SEPARATE guard from `contradictionCapReached`
@@ -1015,45 +1063,121 @@ function annotateCommandGuardBlocked(
 /** issue #387 defaults — see `ConsolidateOpts.setupBudgetMs`/`setupYieldEveryNAtoms`. */
 const DEFAULT_SETUP_BUDGET_MS = 60_000;
 const DEFAULT_SETUP_YIELD_EVERY_N_ATOMS = 500;
+/**
+ * Cap on rowids per `memories_vec` existence-check IN-clause (see
+ * `filterEmbeddedRowids` below) — independent of `pageSize`/
+ * `setupYieldEveryNAtoms`, which is a cooperative-yield cadence knob, not a
+ * bound on statement parameter count. Keeps each existence-check statement
+ * small and fast regardless of how a caller tunes the yield cadence.
+ */
+const VEC_EXISTENCE_CHECK_BATCH_SIZE = 500;
 
 /**
- * issue #387: page through `memories`/`memories_vec` instead of one giant
- * `.all()` call, yielding to the event loop (same `setImmediate` pattern
- * `yieldEveryNPairs` uses) every `pageSize` rows and checking the wall-clock
- * budget between pages. `ORDER BY ... m.rowid` adds a stable tiebreaker the
- * pre-#387 single-query version didn't need (LIMIT/OFFSET pagination is
- * only correct over a deterministically-ordered result set) — `m.rowid` is
- * unique and orthogonal to (repo, type, created_at), so it only disambiguates
- * ties the old query left unspecified anyway; it does not change which rows
- * are returned, only the tie order among rows that already sorted equal.
+ * 2026-08-02 live-incident fix: `filterEmbeddedRowids` used to be folded
+ * into `loadAtomsSetupBounded`'s own page query as `JOIN memories_vec v ON
+ * v.rowid = m.rowid` — an existence filter only (no `v.*` column was ever
+ * selected). Measured on a 90k-row production-shaped corpus, that join
+ * plan is `SCAN m USING INDEX idx_memories_consolidate_scan` +
+ * `SCAN v VIRTUAL TABLE INDEX 1:2!___` **per outer row** — the sqlite-vec
+ * vec0 virtual table does not get an efficient pushed-down rowid-equality
+ * probe in this join shape. Page 1 (offset 0) measured 66ms; page ~50
+ * (offset 25,000) measured 3,448ms; a deep page (offset 60,000) measured
+ * 13,297ms — one synchronous `stmt.all()` call per page, so the daemon's
+ * event loop was blocked for the full duration. This is what wedged the
+ * daemon at boot.
+ *
+ * Fix: page `memories` ALONE (migration 062's covering index then drives a
+ * pure index walk — measured 53–92ms per page regardless of offset, no
+ * join at all) and check embedding-existence per page via a batched
+ * `SELECT rowid FROM memories_vec WHERE rowid IN (...)` — a BATCH of the
+ * same rowid-equality shape `SqliteVecStore.upsert` already uses in
+ * production (`src/vector/sqlite-vec.ts`), not a loop of 500 individual
+ * calls of it. That distinction matters: an independent measurement (a
+ * second 90k-row disk-resident corpus, built separately from the one
+ * above) found a per-rowid point-probe LOOP over 500 rowids — even
+ * selecting nothing but `rowid`, no `embedding` column — took 1.7–2.8s per
+ * page; the SAME 500 rowids in ONE batched `IN (...)` statement took
+ * 27–38ms, ~50–100x faster. Per-statement execution overhead against the
+ * vec0 virtual table, not column selection, dominates — batching amortizes
+ * it, a discrete loop pays it 500 times. (A smaller, fully page-cached
+ * synthetic DB used during initial development understated this gap at
+ * ~153ms for the same loop shape — too small and too cache-friendly to
+ * surface the real per-statement cost; do not trust a tiny in-memory
+ * benchmark for this class of virtual-table-cost question again.) Full
+ * 90k-row corpus walk through the REAL `runConsolidation` code path (not a
+ * hand-copied query), on that same disk-resident DB: 180 pages, max single
+ * page 41ms, 5.06s total. Never re-add a per-rowid loop here.
+ */
+function filterEmbeddedRowids(db: DB, rowids: readonly number[]): Set<number> {
+  const found = new Set<number>();
+  for (let i = 0; i < rowids.length; i += VEC_EXISTENCE_CHECK_BATCH_SIZE) {
+    const batch = rowids.slice(i, i + VEC_EXISTENCE_CHECK_BATCH_SIZE);
+    if (batch.length === 0) continue;
+    const placeholders = batch.map(() => '?').join(',');
+    const rows = db.prepare(`SELECT rowid FROM memories_vec WHERE rowid IN (${placeholders})`)
+      .all(...batch.map(r => BigInt(r))) as { rowid: bigint }[];
+    for (const row of rows) found.add(Number(row.rowid));
+  }
+  return found;
+}
+
+/**
+ * issue #387: page through `memories` instead of one giant `.all()` call,
+ * yielding to the event loop (same `setImmediate` pattern `yieldEveryNPairs`
+ * uses) every `pageSize` rows and checking the wall-clock budget between
+ * pages. `ORDER BY ... rowid` adds a stable tiebreaker the pre-#387
+ * single-query version didn't need (LIMIT/OFFSET pagination is only correct
+ * over a deterministically-ordered result set) — `rowid` is unique and
+ * orthogonal to (repo, type, created_at), so it only disambiguates ties the
+ * old query left unspecified anyway; it does not change which rows are
+ * returned, only the tie order among rows that already sorted equal.
+ *
+ * Valid atoms only, embedded only (no vector row → nothing to compare) —
+ * see `filterEmbeddedRowids` above for why the embedding-existence check is
+ * a separate batched query rather than a SQL join. Filtering happens AFTER
+ * the page is fetched, so a page can come back with fewer than `pageSize`
+ * atoms even when more pages remain (some rows in that page lacked an
+ * embedding) — "last page" is decided from the RAW (unfiltered) page size,
+ * never the post-filter atom count, so a short filtered page is never
+ * mistaken for the end of the corpus. Only a raw page shorter than
+ * `pageSize` means the underlying `memories` scan is actually exhausted.
  *
  * On budget exhaustion, stops fetching further pages and returns what was
  * loaded so far (`budgetExceeded: true`) rather than either hanging or
  * silently returning a complete-looking but truncated dataset — the caller
  * is expected to log this loudly.
+ *
+ * FEAT-482: `shouldPreempt`, when supplied, is checked at the exact same
+ * point as the wall-clock deadline (between pages, never mid-query) — a
+ * true return stops fetching further pages just like budget exhaustion,
+ * reported separately via `preempted: true` so the caller can log which
+ * reason applied.
  */
 async function loadAtomsSetupBounded(
   db: DB,
   deadline: number,
   pageSize: number,
   onYield?: () => void,
-): Promise<{ atoms: AtomRow[]; budgetExceeded: boolean }> {
+  shouldPreempt?: () => boolean,
+): Promise<{ atoms: AtomRow[]; budgetExceeded: boolean; preempted: boolean }> {
   const stmt = db.prepare(`
-    SELECT m.id, m.rowid, m.repo, m.type, m.text, m.importance, m.created_at, m.derived_from
-    FROM memories m
-    JOIN memories_vec v ON v.rowid = m.rowid
-    WHERE m.valid_to IS NULL
-    ORDER BY m.repo, m.type, m.created_at, m.rowid
+    SELECT id, rowid, repo, type, text, importance, created_at, derived_from
+    FROM memories
+    WHERE valid_to IS NULL
+    ORDER BY repo, type, created_at, rowid
     LIMIT ? OFFSET ?
   `);
   const atoms: AtomRow[] = [];
   let offset = 0;
   for (;;) {
     const page = stmt.all(pageSize, offset) as AtomRow[];
-    atoms.push(...page);
-    if (page.length < pageSize) return { atoms, budgetExceeded: false }; // last page
+    const embedded = filterEmbeddedRowids(db, page.map(a => a.rowid));
+    atoms.push(...page.filter(a => embedded.has(a.rowid)));
+    const isLastPage = page.length < pageSize; // decided from the RAW page, before filtering
+    if (isLastPage) return { atoms, budgetExceeded: false, preempted: false };
     offset += pageSize;
-    if (Date.now() >= deadline) return { atoms, budgetExceeded: true };
+    if (Date.now() >= deadline) return { atoms, budgetExceeded: true, preempted: false };
+    if (shouldPreempt?.()) return { atoms, budgetExceeded: true, preempted: true };
     await new Promise<void>(resolve => setImmediate(resolve));
     onYield?.();
   }
@@ -1073,7 +1197,8 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
       contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
       contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
-      judgeCallsNearThreshold: 0, setupBudgetExceeded: false,
+      judgeCallsNearThreshold: 0, setupBudgetExceeded: false, preemptedForHigherPriority: false,
+      resumeCursorUpdated: false,
       dupJudgeVerdictsPreviewed: [], dupJudgeResolved: [], dupJudgeCallsExecuted: 0,
       dupJudgeCapReached: false, dupJudgeWallClockCapReached: false,
       commandGuardBlocked: [], dupJudgeCommandGuardBlocked: 0,
@@ -1113,7 +1238,8 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
     contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
     contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
-    judgeCallsNearThreshold: 0, setupBudgetExceeded: false,
+    judgeCallsNearThreshold: 0, setupBudgetExceeded: false, preemptedForHigherPriority: false,
+    resumeCursorUpdated: false,
     dupJudgeVerdictsPreviewed: [], dupJudgeResolved: [], dupJudgeCallsExecuted: 0,
     dupJudgeCapReached: false, dupJudgeWallClockCapReached: false,
     commandGuardBlocked: [], dupJudgeCommandGuardBlocked: 0,
@@ -1137,12 +1263,21 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
   const setupYieldEveryNAtoms = opts.setupYieldEveryNAtoms ?? DEFAULT_SETUP_YIELD_EVERY_N_ATOMS;
   const setupBudgetMs = opts.setupBudgetMs ?? DEFAULT_SETUP_BUDGET_MS;
   const setupDeadline = Date.now() + setupBudgetMs;
+  // FEAT-482 (worker-starvation wave, item 2/3) — see ConsolidateOpts doc comment.
+  const preemptIfHigherPriorityPending = opts.preemptIfHigherPriorityPending;
 
   // Valid atoms only, embedded only (no vector row → nothing to compare).
-  const { atoms, budgetExceeded: atomsLoadBudgetExceeded } = await loadAtomsSetupBounded(
-    db, setupDeadline, setupYieldEveryNAtoms, onYield,
+  const { atoms, budgetExceeded: atomsLoadBudgetExceeded, preempted: atomsLoadPreempted } = await loadAtomsSetupBounded(
+    db, setupDeadline, setupYieldEveryNAtoms, onYield, preemptIfHigherPriorityPending,
   );
-  if (atomsLoadBudgetExceeded) {
+  if (atomsLoadPreempted) {
+    summary.preemptedForHigherPriority = true;
+    log(
+      `[consolidate] preempted: a higher-priority job is now pending — stopped loading atoms after ` +
+      `${atoms.length} loaded this pass (FEAT-482). Coverage is reduced this run; the remainder is ` +
+      'picked up on the next scheduled pass.',
+    );
+  } else if (atomsLoadBudgetExceeded) {
     summary.setupBudgetExceeded = true;
     log(
       `[consolidate] WARN setup budget (${setupBudgetMs}ms) exceeded while loading atoms — proceeding ` +
@@ -1177,6 +1312,14 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     pairsScannedSinceYield++;
     if (pairsScannedSinceYield >= yieldEveryNPairs) {
       pairsScannedSinceYield = 0;
+      // FEAT-482 (worker-starvation wave, item 2/3): checked at the same
+      // cadence as the yield itself — a true return sets the shared flag
+      // the pairs loop and outer group loop check right after this call
+      // returns, so a preempted run still finishes THIS pair (already
+      // in-flight, no partial mutation risk) but takes no more.
+      if (preemptIfHigherPriorityPending?.()) {
+        pairScanPreempted = true;
+      }
       await new Promise<void>(resolve => setImmediate(resolve));
       onYield?.();
     }
@@ -1361,9 +1504,28 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     allGroups.push({ key, atoms: groupAtoms });
   }
 
+  // FEAT-482 review fix (PR #463): read any persisted resume cursor
+  // UNCONDITIONALLY, not just when a ceiling is configured. A cursor is
+  // only ever non-null after some EARLIER pass persisted one (see the
+  // write side below, also now decoupled from `ceilingActive`) — so for
+  // the common case where no early-abort pass has ever happened, this
+  // stays `null` and changes nothing: `cursorGroupKey === null` below
+  // preserves the exact byte-identical-to-pre-P2.1 natural (repo, type,
+  // created_at) scan order. It only starts mattering once SOME pass
+  // (ceiling hit, setup budget exceeded, or preemption) has left a cursor
+  // behind — which is precisely the case this fix closes.
+  const cursor = getConsolidationCursor(db);
+  const cursorGroupKey = cursor?.groupKey ?? null;
+
   let groupOrder: GroupEntry[] = allGroups;
   const ceilingActive = maxCandidatePairsPerRun !== null;
-  if (ceilingActive) {
+  // Sort/rotate whenever EITHER a ceiling is configured (original P2.1
+  // trigger, unchanged) OR a cursor is already in play from a prior
+  // early-abort pass (FEAT-482 review fix) — without a cursor to rotate
+  // to, sorting alone would silently reorder scans for no benefit, so this
+  // deliberately does NOT sort/rotate on preemption/budget alone; it only
+  // activates once a cursor actually exists to resume from.
+  if (ceilingActive || cursorGroupKey !== null) {
     // `atoms` is already created_at ASC per group (SQL ORDER BY), so a
     // group's own first element is its oldest atom — sort groups by that.
     const sorted = [...allGroups].sort((x, y) => {
@@ -1371,8 +1533,6 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       if (dx !== dy) return dx - dy;
       return x.key < y.key ? -1 : x.key > y.key ? 1 : 0;
     });
-    const cursor = getConsolidationCursor(db);
-    const cursorGroupKey = cursor?.groupKey ?? null;
     const startIdx = cursorGroupKey ? sorted.findIndex(g => g.key === cursorGroupKey) : -1;
     // Rotate so scanning resumes at the persisted cursor; a missing/stale
     // cursor (group merged away since, or never persisted) falls back to
@@ -1390,6 +1550,14 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
   // groups back-to-back still get bounded the same as one large one.
   let setupYieldCounter = 0;
   let setupAbortedMidScan = false;
+  // FEAT-482: distinguishes a preemption abort from a budget-timeout abort
+  // for logging/telemetry — both share the same setupAbortedMidScan control
+  // flow (break the embedding-map loop, reuse ceiling-resume bookkeeping).
+  let setupPreemptedMidScan = false;
+  // FEAT-482: set inside processPair's yield block (closure), checked by
+  // both the pairs loop and the outer group loop right after each await so
+  // a preemption mid-pair-scan breaks out of both, not just the current pair.
+  let pairScanPreempted = false;
 
   // If the atoms LOAD itself already blew the budget, don't even start
   // building embedding maps — every group's deadline check would fail
@@ -1434,17 +1602,31 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
           setupAbortedMidScan = true;
           break;
         }
+        if (preemptIfHigherPriorityPending?.()) {
+          setupAbortedMidScan = true;
+          setupPreemptedMidScan = true;
+          break;
+        }
         await new Promise<void>(resolve => setImmediate(resolve));
         onYield?.();
       }
     }
     if (setupAbortedMidScan) {
-      summary.setupBudgetExceeded = true;
-      log(
-        `[consolidate] WARN setup budget (${setupBudgetMs}ms) exceeded while building embedding maps ` +
-        `(group ${gi + 1}/${groupOrder.length}) — stopping this pass early (issue #387); the ` +
-        'remainder is picked up on the next scheduled pass.',
-      );
+      if (setupPreemptedMidScan) {
+        summary.preemptedForHigherPriority = true;
+        log(
+          `[consolidate] preempted: a higher-priority job is now pending — stopped building embedding ` +
+          `maps (group ${gi + 1}/${groupOrder.length}) so the worker lane can claim it (FEAT-482); the ` +
+          'remainder is picked up on the next scheduled pass.',
+        );
+      } else {
+        summary.setupBudgetExceeded = true;
+        log(
+          `[consolidate] WARN setup budget (${setupBudgetMs}ms) exceeded while building embedding maps ` +
+          `(group ${gi + 1}/${groupOrder.length}) — stopping this pass early (issue #387); the ` +
+          'remainder is picked up on the next scheduled pass.',
+        );
+      }
       // Reuse the ceiling-resume bookkeeping below (when active) so a
       // setup-budget abort resumes from here next run instead of either
       // restarting from scratch or (worse) the ceiling block below
@@ -1469,6 +1651,21 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     for (const [a, b] of pairs) {
       await processPair(a, b, vecs);
       pairsProcessedThisRun++;
+      if (pairScanPreempted) break; // FEAT-482: stop mid-group, see processPair's yield block.
+    }
+
+    if (pairScanPreempted) {
+      // FEAT-482: same "resume from here next run" bookkeeping the ceiling
+      // branch below already uses — a preemption mid-scan is functionally
+      // identical to hitting the ceiling from the cursor's perspective.
+      summary.preemptedForHigherPriority = true;
+      log(
+        `[consolidate] preempted: a higher-priority job is now pending — stopped the pair scan ` +
+        `(group ${gi + 1}/${groupOrder.length}, ${pairsProcessedThisRun} pairs processed this run) so ` +
+        'the worker lane can claim it (FEAT-482); the remainder is picked up on the next scheduled pass.',
+      );
+      ceilingHitAtGroupIndex = gi;
+      break;
     }
 
     if (ceilingActive && pairsProcessedThisRun >= (maxCandidatePairsPerRun as number)) {
@@ -1477,20 +1674,51 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     }
   }
 
-  if (ceilingActive) {
-    if (ceilingHitAtGroupIndex >= 0) {
-      // Persist where to resume — the NEXT group in this run's rotated
-      // order, or `null` (start from the natural oldest-first order) if we
-      // stopped on the very last group.
-      const nextKey = groupOrder[ceilingHitAtGroupIndex + 1]?.key ?? null;
-      setConsolidationCursor(db, { groupKey: nextKey });
-    } else {
-      // Finished every group in groupOrder within budget this run — a full
-      // sweep cycle completed; reset so the next run starts from the
-      // natural oldest-first order again instead of drifting off a cursor
-      // group that may no longer exist.
-      setConsolidationCursor(db, { groupKey: null });
-    }
+  // FEAT-482 review fix (PR #463): persist (or clear) the resume cursor
+  // no longer gated on `if (ceilingActive)` alone. Every early-abort path
+  // (ceiling hit, setupAbortedMidScan, pairScanPreempted) already sets
+  // `ceilingHitAtGroupIndex` regardless of `ceilingActive`; gating only the
+  // WRITE behind `ceilingActive` meant that under the shipped default
+  // config (`maxCandidatePairsPerRun: null`), a preempted run — which can
+  // fire at the very first yield checkpoint, far more easily than the old
+  // 60s `setupBudgetExceeded` floor — would silently re-scan the exact same
+  // deterministic (repo, type, created_at) prefix every single pass,
+  // permanently starving whichever groups sort last under sustained
+  // higher-priority (distill) inflow. The early-abort branch below writes
+  // UNCONDITIONALLY (no `ceilingActive`/`cursorGroupKey` gate) specifically
+  // to bootstrap the read side above: the FIRST early-abort pass under the
+  // default config has no pre-existing cursor to read, so the write must
+  // not wait for `ceilingActive` to ever fire. The full-completion branch
+  // stays conditional — see its own comment.
+  if (ceilingHitAtGroupIndex >= 0) {
+    // Persist where to resume — the NEXT group in this run's rotated
+    // order, or `null` (start from the natural oldest-first order) if we
+    // stopped on the very last group.
+    const nextKey = groupOrder[ceilingHitAtGroupIndex + 1]?.key ?? null;
+    setConsolidationCursor(db, { groupKey: nextKey });
+    summary.resumeCursorUpdated = true;
+    // Observability (PR #463 review, optional-if-cheap ask): makes forward
+    // progress across passes visible in logs — without this, "preempted,
+    // resumed further along" and "preempted at the identical spot again"
+    // were indistinguishable.
+    log(
+      `[consolidate] resume cursor persisted: next pass starts at group ` +
+      `${nextKey ?? '(wrapped to the top of the rotation — every group was reached)'} ` +
+      `— not restarting from the same prefix (FEAT-482).`,
+    );
+  } else if (ceilingActive || cursorGroupKey !== null) {
+    // Finished every group in groupOrder within budget this run — a full
+    // sweep cycle completed. Reset so the next run starts from the natural
+    // oldest-first order again instead of drifting off a cursor group that
+    // may no longer exist. Gated on `ceilingActive || cursorGroupKey !==
+    // null` (mirrors the read-side condition above) rather than writing
+    // unconditionally: this run's ordering was only EVER cursor-influenced
+    // when one of those held, so there is nothing to clear otherwise — and
+    // it keeps the common untouched case (no ceiling, no early-abort ever)
+    // from creating a `consolidation_cursor` row at all, preserving
+    // `getConsolidationCursor()`'s strict `null` ("never persisted")
+    // return for that case.
+    setConsolidationCursor(db, { groupKey: null });
   }
 
   // P2.1: run-summary telemetry (migration 050,

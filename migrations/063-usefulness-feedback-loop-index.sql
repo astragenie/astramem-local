@@ -1,0 +1,64 @@
+-- 063: partial index for feedbackLoopSummary()'s memory_corrected family
+-- (src/storage/usefulness.ts) -- the doctor "Usefulness feedback loop"
+-- full-tier canary's dominant cost.
+--
+-- 2026-08-02 live-incident follow-up to migration 062 (consolidate's
+-- memories_vec join): feedbackLoopSummary() used to run EIGHT separate
+-- `SELECT COUNT(DISTINCT atom_id) FROM memory_events WHERE event_type =
+-- 'usefulness' AND json_extract(payload_json,'$.family') = X [AND
+-- json_extract(...,'$.signal'/'$.source') = Y]` queries. Measured in
+-- production on a 145k-row memory_events table: EVERY one of them --
+-- including the two whose predicate exactly matches a purpose-built
+-- partial index from migration 019 (idx_memory_events_usefulness_served/
+-- _used) -- was planned as `SCAN memory_events USING INDEX
+-- idx_memory_events_atom_seq`, an UNFILTERED index chosen only because
+-- it's already sorted by atom_id (avoids a sort step for the DISTINCT
+-- aggregation). Every query therefore touched all ~145k rows regardless of
+-- predicate selectivity -- eight full-table-shaped scans, back to back, on
+-- the daemon's main thread with no yield between them (~22s measured
+-- total on that corpus), a single sync stretch multiple times longer than
+-- the watchdog's kill threshold (DEFAULT_PROBE_TIMEOUT_MS x 2 consecutive
+-- failures, src/service/watchdog-probe.ts) -- plausibly a contributor to
+-- the "healthy daemon killed" incident class this box chased all day, and
+-- worsening daily since memory_events grows faster than memories.
+--
+-- The application-side fix (src/storage/usefulness.ts) collapses the eight
+-- queries into THREE, one per family, each reading every sub-bucket
+-- (signal/source) it needs from a single scan of that family's rows. Two
+-- of the three families (recall_served, recall_used) already have a
+-- matching partial index from migration 019 and are left untouched. This
+-- migration adds the one that was missing: memory_corrected -- explicitly
+-- called out as unindexed in migration 019's own scope (see
+-- feedbackLoopSummary's file-header comment: "no partial index covers
+-- memory_corrected... accepted unindexed... on the reasoning doctor's
+-- canary was operator-invoked" -- that reasoning stopped holding once
+-- issue #226 put this check on a 15-minute unattended schedule).
+--
+-- Column order: atom_id leading, NOT created_at. feedbackLoopSummary's
+-- corrected-family read is an ALL-TIME `COUNT(DISTINCT atom_id)` with no
+-- created_at filter (see that function's own "Reads ALL-TIME totals..."
+-- doc comment) -- an atom_id-leading index lets the DISTINCT aggregation
+-- stream deduplication off the index's own sort order with no separate
+-- temp b-tree, mirroring exactly why the OLD (undesirable)
+-- idx_memory_events_atom_seq looked attractive to the planner for this
+-- query shape, minus the "touches every row in the table" problem: this
+-- index's WHERE clause bounds it to just the memory_corrected family.
+--
+-- Deliberately scoped to exactly `family = 'memory_corrected'`, not a
+-- broader `event_type = 'usefulness'` catch-all covering all three
+-- families in one index: a first draft tried the broad version and it
+-- measurably regressed a DIFFERENT, unrelated, already-fast query
+-- (usefulnessRate()'s recency-windowed served-count, which rides
+-- idx_memory_events_usefulness_served) by ~40x (1ms -> 44ms measured) --
+-- SQLite's planner started preferring the new broad index (a strict
+-- superset match on event_type alone) over the narrower, better-matching
+-- 019 index for that query too, discarding its targeted `created_at > ?`
+-- SEARCH for a full 'usefulness'-slice SCAN. Scoping this index to exactly
+-- the one family with no existing coverage keeps it disjoint from every
+-- other index's domain, so it can only ever be chosen for a query that
+-- actually filters on `family = 'memory_corrected'` -- it cannot compete
+-- with or be mistakenly preferred over idx_memory_events_usefulness_served/
+-- _used for their own, different-family queries.
+CREATE INDEX idx_memory_events_usefulness_corrected ON memory_events(atom_id)
+  WHERE event_type = 'usefulness'
+    AND json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'memory_corrected';

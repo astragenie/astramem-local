@@ -9,6 +9,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-08-02
+
+Stability release. The daemon could wedge itself unrecoverably while running its
+own scheduled consolidation against a real-sized corpus: on a production instance
+with ~94.5k active memories (927MB SQLCipher DB) the event loop blocked for up to
+**93 seconds** in one stretch, `/health` stopped answering, and the watchdog could
+not recover it — a manual kill was required.
+
+Live-validated against that same corpus after the fix: `POST /consolidation/run`
+returns HTTP 200 in **29s** with a worst observed event-loop block of **1.8s**
+(560 groups scanned to completion), and the daemon has since held `status: ok`
+with p99 ≈ 63ms across sustained load.
+
+### Fixed
+
+- **Consolidate event-loop wedge — one user-visible defect, three stacked causes.**
+  - `isErasedHash()` ran an unindexed full scan of `memory_events` (the largest,
+    append-only, ever-growing table) once per atom on every distill batch.
+    Migration 061 adds a partial index scoped to `event_type='erase_request'` (#465).
+  - Consolidate's atom-loading page scan had no index covering its sort columns, so
+    SQLite re-sorted the entire active-memories set on **every page**
+    (`USE TEMP B-TREE FOR ORDER BY`). Migration 062 adds a covering index (#469).
+  - Migration 062 alone made production **worse**: with the index driving the outer
+    scan, the `memories_vec` (vec0) join degraded into a per-row probe — 1.9s at
+    page 1, 228s by page 150. Fixed by removing the vec0 join from the paginated
+    query entirely, replaced with one batched `WHERE rowid IN (...)` existence check
+    per page. Worst page after the fix: 41ms across all 180 pages (#470).
+- **Periodic multi-second stall in doctor's full tier.** `feedbackLoopSummary()`
+  issued 8 sequential `COUNT(DISTINCT)` queries against `memory_events`; every one
+  was planned as an unfiltered index scan over the whole table, ignoring the
+  purpose-built partial indexes, and the cost grew monotonically with the event log.
+  Collapsed to 3 single-pass queries plus migration 063. Measured on live production
+  data: **22.0s → 355ms** (#472).
+- **Distill poison-rate alarm stuck on stale history.** The alarm counted poisoned
+  sessions over the table's entire lifetime with no window, so a single 90-minute
+  provider quota-exhaustion burst left it red at 47.6% two days later — with zero new
+  poison jobs and six clean distills in between. Now windowed to 7 days (migration
+  060). Poison-job retention consolidated to one constant and extended 30 → 90 days so
+  incident forensics survive long enough to investigate (#462).
+- **`reinstall` could fail and roll back a healthy release.** Windows Task Scheduler's
+  `IgnoreNew` policy tracks whether the wrapper process it launched exited, not whether
+  the daemon stopped; if the start step ran before that bookkeeping caught up, the new
+  daemon silently never spawned and the health gate misread a dead PID as a hang. Now
+  ends the scheduler task synchronously before the PID kill, and `stopLockHolder`
+  cleans up a confirmed-dead `daemon.lock` automatically (#468).
+- **Consolidation could starve higher-priority work once already claimed.** A *running*
+  consolidate job is now preemptible at its existing cooperative yield points, stopping
+  at the current safe checkpoint. A resume cursor persists progress across preempted
+  runs so the same corpus prefix isn't rescanned forever under sustained inflow (#463).
+- **Watchdog probe diagnostics are no longer discarded (win32).** The probe's
+  stdout/stderr went to a `WScript.Shell.Run` call that captured nothing, so when the
+  watchdog failed to recover a wedged daemon it could not report why. Output now lands
+  in `<dataDir>/logs/watchdog-probe.log`, with the probe's execution and exit code
+  fully decoupled from any logging failure — a locked or unwritable log can no longer
+  prevent the probe from running or mask its result (#471).
+
+### Documentation
+
+- README.md and docs/providers.md both recommended `qwen3:8b` as the Ollama default —
+  a model known to return empty output under thinking mode and to exceed an 8GB VRAM
+  budget. Corrected to the actual shipped default `qwen2.5:7b`. The provider matrix and
+  Quick Start omitted `codex-subscription` and `onnx` entirely despite those being the
+  shipped default LLM and embedding providers; both rewritten. Removed a stale "not yet
+  shipped" claim about proxy spool redaction and corrected the reasoning-model-guard
+  description (#461, #466).
+
+### Internal
+
+- Pinned two transitive dependencies to clear `bun audit --audit-level=high`:
+  `find-my-way` (GHSA-c96f-x56v-gq3h, HTTP/2 DDoS, via `fastify`) and `postcss`
+  (GHSA-r28c-9q8g-f849, path traversal, dev-only via `vitest`) (#464).
+- CI auto-merge now fails loudly instead of reporting success while swallowing
+  `Bad credentials` under a blanket try/catch. **This does not restore auto-merge** —
+  the `AUTOMERGE_PAT` secret still needs rotating by an operator; it only stops the
+  workflow from lying. `cross-repo-roundtrip` also gained a content-hashed cache for
+  the prebuilt SQLCipher addon plus harder retries, against CDN 503s (#467).
+
+### Migrations
+
+Four additive index migrations (060–063), applied automatically on first start after
+upgrade; no destructive schema changes. Total after this release: **63**. On a large
+existing database (927MB / ~94k rows on the reference box) building these indexes is a
+one-time cost on the first boot after upgrading — expect a slower first start.
+
+### Known issues
+
+- **Windows: the synchronous credential-store read at boot still has no timeout.**
+  Under a degraded OS credential subsystem, `@napi-rs/keyring`'s `getPassword()` can
+  hang the daemon before it binds its port. A fix was written for this release but
+  **deliberately held back**: review found that bounding the read made a timeout
+  indistinguishable from "no key exists," which caused a fresh key to be minted and
+  silently overwrite the real SQLCipher passphrase — unrecoverable. Deferred to 0.22.1
+  with that defect fixed. Workaround if hit: reboot the host.
+- **Watchdog identity-check hardening is still outstanding.** #471 makes the watchdog's
+  failures visible, but `stopLockHolder`'s PID-identity check (which spawns a
+  `powershell.exe` per attempt) can still fail closed under load, so recovery from a
+  wedged-but-alive daemon remains unproven. Deferred to a later 0.22.x.
+- **OFFSET pagination still walks discarded rows.** Migration 062 removed the sort
+  cost from consolidate's page scan, but `OFFSET`'s own O(offset) skip survives.
+  Keyset pagination planned for 0.22.1.
+
 ## [0.21.0] - 2026-07-23
 
 Retrieval-overhaul + wave program (PR #456). **No default answer behavior

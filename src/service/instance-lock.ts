@@ -525,6 +525,23 @@ export interface StopLockHolderOptions {
  * force-terminates on Windows (no handler runs — same as the existing
  * `reinstall` stop path) and delivers a real, gracefully-handled SIGTERM on
  * POSIX (`serve.ts` has a `process.on('SIGTERM', shutdown)` handler).
+ *
+ * Every `ok: true` outcome ALSO deletes `daemon.lock` (issue: reinstall
+ * stale-lock false-fail) — once a holder is CONFIRMED gone (dead PID, or
+ * signaled and no longer answering `/health`), leaving its lock file behind
+ * serves no purpose and actively misleads the next reader: `reinstall`'s
+ * verify-health gate (`waitForHealthWithBootGrace`, cli/reinstall.ts) reads
+ * `daemon.lock` while polling a freshly-started daemon and, finding the OLD
+ * dead PID still recorded there, correctly concludes "daemon-dead" and
+ * rolls back — even when the real problem was upstream (the new daemon
+ * never got a chance to write ITS OWN lock at all). Deletion only fires when
+ * the file, re-read at cleanup time, still names the EXACT holder this call
+ * just confirmed gone (`pid` + `startedAt` both match) — never while a
+ * holder might still be alive, and never a lock some OTHER process (a
+ * sibling watchdog restart, a brand-new boot) has since claimed. Mirrors the
+ * same "only touch it if it's still ours" guard `InstanceLock.release()`
+ * already uses against its own pid, checked here against the STOPPED
+ * holder's identity instead of the caller's own.
  */
 export async function stopLockHolder(
   dataDir: string,
@@ -538,6 +555,17 @@ export async function stopLockHolder(
   const probe = opts.healthProbe ?? healthOk;
   const resolveStartTime = opts.processStartTime ?? getProcessStartTime;
 
+  const removeConfirmedStaleLock = (): void => {
+    try {
+      const current = readLockInfo(dataDir);
+      if (current && current.pid === holder.pid && current.startedAt === holder.startedAt) {
+        unlinkSync(lockPath(dataDir));
+      }
+    } catch {
+      /* best-effort — a concurrent cleanup/steal may already have removed or replaced it */
+    }
+  };
+
   // PID-alive is not identity. A crash can leave a stale lock behind; the OS
   // then recycles the PID for an unrelated process, and "alive" alone would
   // make us signal it. Confirm the live process at holder.pid actually
@@ -549,6 +577,7 @@ export async function stopLockHolder(
   const identity = await checkHolderIdentity(holder.pid, holder.startedAt, resolveStartTime, pidAlive);
 
   if (identity.status === 'dead') {
+    removeConfirmedStaleLock();
     return { ok: true, detail: `stale lock (pid ${holder.pid} already dead)` };
   }
   if (identity.status === 'no-recorded-start') {
@@ -593,7 +622,10 @@ export async function stopLockHolder(
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     const healthy = await probe(targetPort);
-    if (!healthy) return { ok: true, detail: `stopped pid ${holder.pid}` };
+    if (!healthy) {
+      removeConfirmedStaleLock();
+      return { ok: true, detail: `stopped pid ${holder.pid}` };
+    }
     await new Promise(r => setTimeout(r, 250));
   }
   return { ok: false, detail: `pid ${holder.pid} still serving after ${waitMs}ms`, reason: 'stop-timeout' };

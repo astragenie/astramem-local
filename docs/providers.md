@@ -7,9 +7,10 @@ metered key — **this is the shipped default as of v0.18.0**, not an obscure op
 `anthropic` (Claude, via the native Messages API). On top of `openai-compatible`, four curated
 **presets** — Groq, Gemini, Kimi (Moonshot), DeepSeek — were added in Wave 1 BYO (PR #414) so the
 `init` wizard can offer them as one-click choices instead of asking you to hand-type a base URL;
-each preset is not a new provider, just a named `{baseUrl, defaultModel}` pair. Embedding only
-supports Ollama and Azure OpenAI. You configure LLM providers independently for the compaction
-stage and the extraction stage.
+each preset is not a new provider, just a named `{baseUrl, defaultModel}` pair. Embedding supports
+Ollama, Azure OpenAI, and ONNX — an in-process, no-server-required provider that is the **shipped
+default** as of ADR-018 (S4, 2026-07-15), even when the LLM provider is Ollama or something else.
+You configure LLM providers independently for the compaction stage and the extraction stage.
 
 **Quick picker:**
 
@@ -68,7 +69,7 @@ systemctl --user enable --now ollama
 For LLM (compaction + extraction):
 
 ```bash
-ollama pull qwen3:8b
+ollama pull qwen2.5:7b
 ```
 
 For embedding:
@@ -87,7 +88,7 @@ Expected output includes:
 
 ```
 NAME                            ID              SIZE
-qwen3:8b                       ...             5.2 GB
+qwen2.5:7b                     ...             4.7 GB
 mxbai-embed-large               ...             670 MB
 ```
 
@@ -99,10 +100,10 @@ In `config.yaml`:
 llm:
   compaction:
     provider: ollama
-    model: qwen3:8b
+    model: qwen2.5:7b
   extraction:
     provider: ollama
-    model: qwen3:8b
+    model: qwen2.5:7b
 
 embedding:
   provider: ollama
@@ -122,7 +123,7 @@ astramem-local providers test ollama
 Expected:
 
 ```
-  LLM (ollama / qwen3:8b)    ok   latency=1234ms
+  LLM (ollama / qwen2.5:7b)  ok   latency=1234ms
   Embed (ollama / mxbai-embed-large)  ok   dim=1024
 ```
 
@@ -161,30 +162,35 @@ prompts. Two extra env vars are available for scripted installs:
 ### Extraction/compaction model tier
 
 When the LLM provider is Ollama, `init` offers a tier picker for the extraction/compaction model
-instead of hard-coding a tag. As of 2026-07-13 there is a single curated tier — the operator
-standardized on `qwen3:8b`, retiring both prior candidates (`qwen2.5:7b`, the former default with
-F1 67%/precision 99% from the 2026-07-08 A/B benchmark, and `qwen2.5-coder:7b`, the former
-"fastest" tier at F1 59%). **There is no F1 benchmark yet for `qwen3:8b`** — a fresh run against
-the extraction bench is pending (`scripts/eval/extraction-bench/`); do not read the old numbers as
-describing this model's quality.
+instead of hard-coding a tag. As of 2026-07-14 there is a single curated tier — `qwen2.5:7b`,
+**restored** as RECOMMENDED/default after a same-day detour through `qwen3:8b` (tried 2026-07-13,
+retired the same day it shipped: it returned empty extraction output under thinking mode and blew
+this hardware class's VRAM ceiling once the embedder was resident alongside it) and, briefly,
+`qwen3.5:4b` (fast and VRAM-safe, but under-extracted atoms from real conversational transcripts).
+`qwen2.5:7b` scores F1 67%/precision 99% in the 2026-07-08 extraction-bench A/B — the strongest
+local model measured on actual atom extraction, not just the safest one left standing.
 
 | Tier                          | Model                | Download | RAM recommended | Benchmark                                    |
 |--------------------------------|-----------------------|----------|------------------|-----------------------------------------------|
-| RECOMMENDED (default)          | `qwen3:8b`            | ~5.2 GB  | 16 GB            | benchmark pending                             |
-| BYO cloud                      | azure-openai (pivots the wizard to the existing cloud provider option) | n/a — no local download | n/a | best type-accuracy of any option |
+| RECOMMENDED (default)          | `qwen2.5:7b`          | ~4.7 GB  | 8 GB             | F1 67%, precision 99% (extraction-bench, 2026-07-08 A/B) |
+| BYO cloud                      | azure-openai / openai-compatible / codex-subscription (pivots the wizard to the existing cloud provider option) | n/a — no local download | n/a | varies by provider |
 | Custom                          | (free-text model tag) | varies — check `ollama show <model>` | varies | not benchmarked |
 
-Resident RAM for `qwen3:8b` runs higher than the retired `qwen2.5-coder:7b` (~5 GB resident): with
-flash-attention + a q8 KV cache it's ~5.76 GB resident, or ~6.2 GB without — plus `mxbai-embed-large`
-(~0.67 GB) for the full local stack, that's roughly **~6.4 GB RAM** with flash-attn, ~6.9 GB
-without. The 16 GB RAM guidance above still applies but with less headroom than before; see the
-main README's system-requirements callout for the honest total.
+`qwen2.5:7b` fits an 8 GB VRAM card with real headroom alongside the `mxbai-embed-large` embedder
+(~0.67 GB) — unlike `qwen3:8b` (5.76 GB resident with flash-attention + a q8 KV cache, ~6.2 GB
+without), which exceeded the ceiling, spilled layers to CPU, and poisoned distill jobs via
+timeout. See the main README's system-requirements callout for the current total.
 
 `qwen2.5-coder:14b` ("quality" tier in earlier wizard versions) remains **dropped from the curated
 list entirely** — the 2026-07-08 benchmark showed a 20% permanent-failure (poison) rate and
-72.7s/session, strictly worse than the local tiers on every axis. `qwen2.5-coder:7b` and
-`qwen2.5:7b` are also no longer curated tiers (see above). Any of these, or another model, is
-still reachable via the "custom" tier if you have a specific reason to.
+72.7s/session, strictly worse than the local tiers on every axis. `qwen2.5-coder:7b` (F1 59%, the
+former "fastest" tier) is also not a curated tier — it's outperformed by `qwen2.5:7b` on
+extraction quality. Any of these, or another model, is still reachable via the "custom" tier if
+you have a specific reason to.
+
+Note that since v0.18.0 the wizard's actual default LLM provider is `codex-subscription`, not
+Ollama at all — the tier picker above only appears when you explicitly choose (or fall back to)
+Ollama for the LLM stage. See the Quick picker table at the top of this document.
 
 The chosen tag is written to both `llm.compaction.model` and `llm.extraction.model` in
 `config.yaml` (this wizard configures both stages with the same provider/model — mix providers
@@ -736,7 +742,7 @@ embedding (free):
 llm:
   compaction:
     provider: ollama
-    model: qwen3:8b    # free
+    model: qwen2.5:7b  # free
   extraction:
     provider: azure-openai
     model: gpt-4-1              # more reliable JSON mode

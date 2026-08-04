@@ -443,73 +443,128 @@ export interface FeedbackLoopSummary {
  * canary), so it's accepted unindexed rather than adding a migration for it.
  */
 export function feedbackLoopSummary(db: DB): FeedbackLoopSummary {
-  const servedDistinct = (db.prepare(`
-    SELECT COUNT(DISTINCT atom_id) AS n
-    FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_served'
-  `).get() as { n: number }).n;
+  // 2026-08-02 live-incident fix (residual event-loop stall found chasing
+  // FEAT-470): this used to be EIGHT separate `COUNT(DISTINCT atom_id) ...
+  // WHERE event_type = 'usefulness' AND json_extract(...) = X` queries.
+  // Measured on a 145k-row production `memory_events` table, EVERY one of
+  // them — including the two (family='recall_served'/'recall_used') whose
+  // predicate exactly matches a purpose-built partial index from migration
+  // 019 — got planned by SQLite as `SCAN memory_events USING INDEX
+  // idx_memory_events_atom_seq`: an UNFILTERED index, chosen only because
+  // it's already sorted by atom_id (avoids a sort step for the DISTINCT
+  // aggregation), so every query touched all ~145k rows regardless of how
+  // selective its own predicate was. The whole function is plain
+  // synchronous code with no `await` between any of the eight queries, so
+  // this was one genuinely continuous, non-yielding block — measured (on a
+  // then-uncontended box) between ~1.3s and ~3.6s PER query, ~22s total for
+  // the full function, a single sync stretch three times longer than the
+  // watchdog's DEFAULT_PROBE_TIMEOUT_MS(10s)-times-2-consecutive-failures
+  // kill threshold (src/service/watchdog-probe.ts) — plausibly a
+  // contributor to the "healthy daemon killed" incident class, and it gets
+  // WORSE every day since memory_events grows faster than memories (every
+  // recall serves multiple events per call).
+  //
+  // Fix: THREE queries (one per family), not one. A first draft tried a
+  // single `WHERE event_type = 'usefulness'` query backed by one new broad
+  // index — measured fast in isolation, but adding that index made SQLite's
+  // planner pick it over migration 019's idx_memory_events_usefulness_served
+  // for usefulnessRate()'s OWN query too (same event_type predicate, a
+  // strict subset), regressing that unrelated, already-fast, already-hot
+  // query ~40x (1ms -> 44ms measured, recency-windowed case) by discarding
+  // its targeted `created_at > ?` index SEARCH for a full 'usefulness'-slice
+  // SCAN. Reverted for that reason — a fix that breaks a different query is
+  // not a fix. This version instead REUSES migration 019's two existing
+  // indexes unchanged (recall_served/recall_used — zero risk of touching
+  // their query plans, since no new index is added in their domain) and
+  // adds exactly ONE new index scoped to family = 'memory_corrected'
+  // (migration 063) — the one family migration 019 never covered (see this
+  // function's own doc comment above: "no partial index covers
+  // memory_corrected"). Three scans, each bounded to its own family's row
+  // count via an unambiguous best-matching index, not the whole table —
+  // down from eight full-table-shaped scans to three properly-indexed ones,
+  // with every sub-bucket per family computed from ONE read of that family's
+  // rows instead of one query per sub-bucket. tests/storage/usefulness.test.ts's
+  // "single-pass rewrite matches the old 8-query behavior" suite asserts
+  // exact old-vs-new equivalence across edge cases (empty table, one family
+  // only, an atom appearing in multiple families, corrected-with-mixed-source).
+  const J = safeJsonColumn('payload_json');
 
-  const usedDistinct = (db.prepare(`
-    SELECT COUNT(DISTINCT atom_id) AS n
+  // servedDistinct: unchanged query shape, rides migration 019's
+  // idx_memory_events_usefulness_served (already proven fast/correct by
+  // usefulnessRate()'s own use of the identical shape) — was: servedDistinct.
+  const servedRows = db.prepare(`
+    SELECT atom_id AS atomId
     FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
-  `).get() as { n: number }).n;
+    WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'recall_served'
+  `).all() as Array<{ atomId: string }>;
+  const servedDistinct = new Set(servedRows.map(r => r.atomId)).size;
 
-  // issue #190 phase 5: split used by signal, same unindexed-scan tradeoff
-  // as the corrected split below — small volume relative to served.
-  const usedExplicitDistinct = (db.prepare(`
-    SELECT COUNT(DISTINCT atom_id) AS n
+  // usedDistinct/usedExplicitDistinct/usedHeuristicDistinct: ONE scan (was
+  // three) riding migration 019's idx_memory_events_usefulness_used
+  // unchanged — signal is read alongside atom_id so the explicit/heuristic
+  // split needs no second or third query.
+  const usedRows = db.prepare(`
+    SELECT atom_id AS atomId, json_extract(${J},'$.signal') AS signal
     FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
-      AND json_extract(${safeJsonColumn('payload_json')},'$.signal') = 'explicit'
-  `).get() as { n: number }).n;
+    WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'recall_used'
+  `).all() as Array<{ atomId: string; signal: string | null }>;
+  const usedIds = new Set<string>();
+  const usedExplicitIds = new Set<string>();
+  const usedHeuristicIds = new Set<string>();
+  for (const row of usedRows) {
+    usedIds.add(row.atomId); // was: usedDistinct (no signal predicate)
+    if (row.signal === 'explicit') usedExplicitIds.add(row.atomId); // was: usedExplicitDistinct
+    else if (row.signal === 'heuristic') usedHeuristicIds.add(row.atomId); // was: usedHeuristicDistinct
+  }
 
-  const usedHeuristicDistinct = (db.prepare(`
-    SELECT COUNT(DISTINCT atom_id) AS n
+  // correctedDistinct/correctedConsolidationDistinct/correctedExternalDistinct/
+  // correctedUnknownDistinct: ONE scan (was four) riding the NEW
+  // idx_memory_events_usefulness_corrected (migration 063) — source is read
+  // alongside atom_id.
+  const correctedRows = db.prepare(`
+    SELECT atom_id AS atomId, json_extract(${J},'$.source') AS source
     FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
-      AND json_extract(${safeJsonColumn('payload_json')},'$.signal') = 'heuristic'
-  `).get() as { n: number }).n;
-
-  const correctedDistinct = (db.prepare(`
-    SELECT COUNT(DISTINCT atom_id) AS n
-    FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected'
-  `).get() as { n: number }).n;
-
-  // issue #190 AC-2: same unindexed-scan tradeoff as correctedDistinct above
-  // (no partial index covers memory_corrected — see this function's doc
-  // comment) — three more predicates on the same small-volume event family,
-  // not a new full-table scan.
-  const correctedConsolidationDistinct = (db.prepare(`
-    SELECT COUNT(DISTINCT atom_id) AS n
-    FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected'
-      AND json_extract(${safeJsonColumn('payload_json')},'$.source') = 'consolidation_auto'
-  `).get() as { n: number }).n;
-
-  const correctedExternalDistinct = (db.prepare(`
-    SELECT COUNT(DISTINCT atom_id) AS n
-    FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected'
-      AND json_extract(${safeJsonColumn('payload_json')},'$.source') = 'external'
-  `).get() as { n: number }).n;
-
-  const correctedUnknownDistinct = (db.prepare(`
-    SELECT COUNT(DISTINCT atom_id) AS n
-    FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected'
-      AND json_extract(${safeJsonColumn('payload_json')},'$.source') IS NULL
-      AND atom_id NOT IN (
-        SELECT atom_id FROM memory_events
-        WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected'
-          AND json_extract(${safeJsonColumn('payload_json')},'$.source') IS NOT NULL
-      )
-  `).get() as { n: number }).n;
+    WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'memory_corrected'
+  `).all() as Array<{ atomId: string; source: string | null }>;
+  const correctedIds = new Set<string>();
+  const correctedConsolidationIds = new Set<string>();
+  const correctedExternalIds = new Set<string>();
+  // issue #190 AC-2's "unknown" bucket needs BOTH sides of the split (which
+  // atoms have at least one sourced correction, which have at least one
+  // unsourced one) — a single row is never both, but one ATOM can have
+  // events on both sides over its lifetime, which is exactly what the old
+  // NOT IN subquery excluded from "unknown". Same exclusion, computed below
+  // from these two sets instead of a second subquery scan.
+  const correctedSourcedIds = new Set<string>();
+  const correctedUnsourcedIds = new Set<string>();
+  for (const row of correctedRows) {
+    correctedIds.add(row.atomId); // was: correctedDistinct (no source predicate)
+    if (row.source === 'consolidation_auto') correctedConsolidationIds.add(row.atomId); // was: correctedConsolidationDistinct
+    else if (row.source === 'external') correctedExternalIds.add(row.atomId); // was: correctedExternalDistinct
+    // json_extract returns SQL NULL for both a missing key and an explicit
+    // JSON null — same as the old query's `IS NULL`/`IS NOT NULL`
+    // predicates, which is what row.source === null mirrors here.
+    if (row.source === null) correctedUnsourcedIds.add(row.atomId);
+    else correctedSourcedIds.add(row.atomId);
+  }
+  // was: correctedUnknownDistinct's `source IS NULL AND atom_id NOT IN
+  // (... source IS NOT NULL ...)` — an atom counts here only if EVERY
+  // memory_corrected event it has is unsourced (pre-fix history); one with
+  // both a sourced and an unsourced correction is excluded, same as before.
+  let correctedUnknownDistinct = 0;
+  for (const id of correctedUnsourcedIds) {
+    if (!correctedSourcedIds.has(id)) correctedUnknownDistinct++;
+  }
 
   return {
-    servedDistinct, usedDistinct, usedExplicitDistinct, usedHeuristicDistinct, correctedDistinct,
-    correctedConsolidationDistinct, correctedExternalDistinct, correctedUnknownDistinct,
+    servedDistinct,
+    usedDistinct: usedIds.size,
+    usedExplicitDistinct: usedExplicitIds.size,
+    usedHeuristicDistinct: usedHeuristicIds.size,
+    correctedDistinct: correctedIds.size,
+    correctedConsolidationDistinct: correctedConsolidationIds.size,
+    correctedExternalDistinct: correctedExternalIds.size,
+    correctedUnknownDistinct,
   };
 }
 
