@@ -75,6 +75,50 @@ improvement over a bookkeeping gap.
 **Effort:** medium (eval wall-clock, not engineering). **Risk if skipped:** a permanent 2× cost
 default defended by a number that cannot be produced on request.
 
+### ⛔ Costing result (2026-08-04) — full-suite is NOT currently affordable
+
+A costing pass produced a **no-go for an immediate full-suite run**:
+
+| | codex-subscription calls |
+|---|---|
+| Leg B — single-pass | ~272–350 |
+| Leg A — dual-pass, faithful (`--passb-sweep untuned`) | ~544–700 |
+| **Both legs, same day** | **~820–1050** |
+
+**Anchor:** the 2026-07-31 quota exhaustion tripped at **~322 HTTP 429s / 55 poisoned jobs** — the
+only real data point this repo has for what exhausts a ChatGPT Plus quota in one burst. The
+two-leg run needs roughly **3× that**. With no circuit breaker yet (P0-1), a 429 storm mid-run
+would retry-and-poison rather than stop cleanly — repeating the exact incident this plan exists to
+prevent.
+
+**Revised sequencing for P0-2:**
+
+1. **P0-1 and P0-3 must land first.** Both are hard prerequisites, not parallel work.
+2. **Calibrate** with `--dry-run-throughput --dry-run-conversations 1` (no answerer, no judge, no
+   Azure call) to replace the estimated chunk count with a measured one. The ~272–350 figure is
+   *inferred* — no archived run records an actual full-suite chunk count.
+3. **Cheap directional check** at conv-1 scale, same-day dual-vs-single. Cannot restore the
+   0.4610→0.5549 claim (scales are not comparable) but does confirm the effect still exists on
+   codex today.
+4. **Full-suite pair only with confirmed quota headroom** — ideally a fresh billing cycle — using
+   `--shards` and `run.mts --resume` so a 429 burst can be caught and resumed rather than left to
+   poison jobs unattended.
+
+### Two fidelity traps found while costing
+
+- **`--passb-sweep untuned` is required for faithful replication.**
+  `EXTRACTION_PASS_B_DEFAULTS` (the skip-gate, `sweepOnlyBelowAtoms: 8`, and the 1500-token cap)
+  was added **four days after** 0.5549 was measured. Omitting the flag silently answers a
+  different, cheaper question — today's gated dual-pass, not the configuration the `config.ts`
+  comment cites.
+- **The re-run is not a clean replication, by design.** The original ran on local qwen; this runs
+  on `codex-subscription`. That is deliberate — it measures the more decision-relevant question
+  ("does dual-pass help on the provider that actually ships") — but the resulting number must not
+  be presented as a reproduction of 0.5549. It is a new measurement.
+
+The harness has **no paired/interleaved run mode**; same-wall-clock-day back-to-back invocations
+are the only available variance control.
+
 ---
 
 ### P0-3 · Guard against unarchived eval runs
