@@ -193,6 +193,50 @@ natural to live. **Effort:** medium.
 
 ---
 
+## P1-4 · Bedrock migration for eval answering + judging
+
+**Detailed wave plan: [`bedrock-migration-plan-2026-08-04.md`](./bedrock-migration-plan-2026-08-04.md)**
+
+The org has moved off Azure, but every eval answerer and judge call still goes to Azure OpenAI —
+authenticated by shelling out to `az cognitiveservices account keys list` against a **hardcoded**
+subscription, resource group and account (`scripts/eval/shared/config.ts:22-24`), with no fallback.
+Verified working 2026-08-04 (HTTP 200). When that subscription is decommissioned, **every eval loses
+its answerer and judge simultaneously**, failing at three constants nobody has recorded as a
+dependency.
+
+**Scope-determining fact:** the eval harness bypasses the provider abstraction entirely.
+`scripts/eval/shared/azure-client.ts` never imports from `src/`. So adding
+`src/providers/llm/bedrock.ts` would switch the *daemon* and do nothing for judging. These are two
+separate migrations; only the eval one is planned here.
+
+Bedrock also cannot ride the `openai-compatible` adapter — Converse uses AWS SigV4 signing, not
+`Authorization: Bearer`, with a different envelope and model ARNs.
+
+**Five waves, heavily parallel:**
+
+| Wave | Content | Parallelism |
+|---|---|---|
+| 1 | Converse client · credential/region resolution · **the `JudgeClient` seam** | 3 tracks, fully parallel |
+| 2 | Call-site migration — locomo · longmemeval TS · extraction-bench · oracle | 4 tracks, one worktree each |
+| 3 | The `boto3` rewrite of the forked Python judge | parallel to wave 2 |
+| 4 | **Dual-judge calibration — gates the cutover** | serial |
+| 5 | Cutover, then retire the hardcoded Azure constants | serial |
+
+Wave 1's seam is load-bearing: without it, wave 2 is 15 simultaneous edits to files that must keep
+working on Azure. With it, each call site is mechanical and independently revertible, and Azure
+stays live behind an env var until wave 4 says otherwise.
+
+### ⚠️ Why wave 4 cannot be skipped
+
+**Changing the judge model silently invalidates comparability with every archived number.** Every
+row in `LEDGER.md` was scored by `gpt-5-mini`. Cut over first and any later delta is unattributable
+— the same confound that makes codex day-variance so expensive (adversarial review, Charge 7).
+
+So the calibration re-judges an already-archived run with **both** backends and compares, before
+the default flips. `LEDGER.md` needs a judge-backend column regardless of the outcome.
+
+---
+
 ## Demo blockers — separate track, product decisions
 
 From Sheet 08. These are not architecture defects; they are things a customer hits on day one.
