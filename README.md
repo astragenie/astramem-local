@@ -49,15 +49,9 @@ export MEMORY_BEARER=$(astramem-local token print)
 Requires Node.js >= 20. Native deps (`better-sqlite3-multiple-ciphers`, `@napi-rs/keyring`) use
 prebuilt binaries where available, falling back to a from-source compile otherwise.
 
-### From source / org-internal
-
-> **Note:** this repo is private. The one-liner scripts and `git clone` below only work if you
-> (or your CI) already have read access to `astragenie/astramem-local` — an unauthenticated
-> `curl`/`irm` fetch of the raw script URL, or a `git clone` of the repo, will 404/403. If you
-> don't have repo access, use the npm install above instead.
-
-**One-liner install scripts** (do the Node check + npm install for you, then hand off to the
-wizard):
+**One-liner install scripts** — no npm needed first, the script does the Node check + npm install
+for you, then hands off to the wizard. Fastest path if you don't already have a Node toolchain
+open:
 
 ```bash
 # Linux / macOS
