@@ -23,7 +23,7 @@
 #
 # TAG NAMESPACE: uses `contracts-v*`, NOT the root package's `v*` tag scheme
 # (see publish.yml / version-tag-parity.yml). This repo publishes TWO
-# independent npm packages (root @astragenie/astramemory-local + this one) —
+# independent npm packages (root astramem-local + this one) —
 # sharing the `v*` tag would either double-trigger both publish jobs on every
 # tag or force the two packages to release in lockstep, which they must not:
 # contracts/package.json semver tracks contracts-package changes (schema

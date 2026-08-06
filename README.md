@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/astramem-local.svg)](https://www.npmjs.com/package/astramem-local)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Test](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml/badge.svg)](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml)
+[![Test](https://github.com/astragenie/astramem-local/actions/workflows/test.yml/badge.svg)](https://github.com/astragenie/astramem-local/actions/workflows/test.yml)
 
 Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). See the npm badge above or [CHANGELOG.md](CHANGELOG.md) for the current release — this README doesn't hardcode a version number, it goes stale every release.
 
@@ -75,12 +75,12 @@ wizard):
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/astragenie/astramemory-local/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/astragenie/astramem-local/main/install.sh | bash
 ```
 
 ```powershell
 # Windows (PowerShell 5.1+ or 7+)
-irm https://raw.githubusercontent.com/astragenie/astramemory-local/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/astragenie/astramem-local/main/install.ps1 | iex
 ```
 
 If the script's own output is piped through a non-interactive shell, it stops after installing
@@ -90,8 +90,8 @@ for provider choice.
 **From source (contributors, or if you want to build from a branch):**
 
 ```bash
-git clone https://github.com/astragenie/astramemory-local.git
-cd astramemory-local
+git clone https://github.com/astragenie/astramem-local.git
+cd astramem-local
 bun install
 bun run build
 node dist/cli/index.js init

@@ -1,7 +1,7 @@
 # Migrating from AstraMemory SaaS to local daemon
 
 This guide walks you through redirecting the `memory-plugin` hooks from the hosted AstraMemory
-SaaS endpoint to an `astramemory-local` daemon running on your workstation. The plugin code does
+SaaS endpoint to an `astramem-local` daemon running on your workstation. The plugin code does
 not change — only two environment variables are swapped.
 
 ---

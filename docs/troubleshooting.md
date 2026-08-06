@@ -376,4 +376,4 @@ OLLAMA_GPU_LAYERS=35 ollama serve
 
 - Run `astramem-local doctor --json` and include the output in any bug report.
 - Check the daemon log: see "Check logs" above for your OS.
-- File issues at [github.com/astragenie/astramemory-local](https://github.com/astragenie/astramemory-local).
+- File issues at [github.com/astragenie/astramem-local](https://github.com/astragenie/astramem-local).
