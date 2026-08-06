@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-08-06
+
+Daemon stability patch. Forensics on 3-7 days of production logs (2026-08-05)
+root-caused the recurring 30-64s daemon freezes: a vec search that timed out on
+the worker thread fell back to a **synchronous main-thread scan of the same
+query**, blocking the event loop for at least the timeout it had just blown
+(measured: el_p99 ≈ 70ms with el_max 64,391ms on an idle box, a 450,015ms gap in
+the 30s spool-drain tick, and legitimate watchdog kills of a genuinely
+unresponsive daemon).
+
+### Fixed
+
+- **vec search timeout no longer blocks the event loop** (#484): a search that
+  exceeds its worker timeout now throws `VecSearchTimeoutError` instead of
+  falling back to the synchronous main-thread scan. Callers already degrade
+  gracefully (hybrid search continues FTS-only for that query). Infrastructure
+  failures (worker spawn failure, worker crash) still fall back as before —
+  there the query is not implicated. Timeouts and fallbacks are now counted
+  separately (`searchTimeoutCount` vs `fallbackCount`).
+- **Ollama embed requests now send `keep_alive` (default `30m`)** (#485): the
+  embed model was evicted after Ollama's default 5-minute idle unload, making
+  the first embed after any pause pay a 5.7-11.3s model reload (26ms warm).
+  Configurable via `embedding.ollama.keepAlive`.
+
 ## [0.22.0] - 2026-08-02
 
 Stability release. The daemon could wedge itself unrecoverably while running its
