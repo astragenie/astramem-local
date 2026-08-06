@@ -94,10 +94,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/astragenie/astramemory-local.git"
+    "url": "git+https://github.com/astragenie/astramem-local.git"
   },
-  "homepage": "https://github.com/astragenie/astramemory-local#readme",
+  "homepage": "https://github.com/astragenie/astramem-local#readme",
   "bugs": {
-    "url": "https://github.com/astragenie/astramemory-local/issues"
+    "url": "https://github.com/astragenie/astramem-local/issues"
   }
 }

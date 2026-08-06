@@ -23,11 +23,11 @@ the 2026-07-21 agentic-setup rebuild.
   `codex-subscription` as the default LLM + ONNX as the default embed provider, and documented
   `MEMORY_API_URL` as the **daemon's** env var (distinct from `MEMORY_MCP_URL`, which is
   plugin-side).
-- **Local clone dir on this box is `C:\work\mega\astramem-local`** — folder renamed from the
-  GitHub repo name `astramemory-local` (same rename pattern as `hero-crew`→`dev-team` elsewhere in
-  the ecosystem). `CLAUDE.md`'s install snippet previously hardcoded `cd
-  C:\work\mega\astramemory-local`, which doesn't exist on this machine; corrected this run to stop
-  hardcoding a path.
+- **GitHub repo name is `astragenie/astramem-local`** (verified 2026-08-06: `gh repo view
+  astragenie/astramemory-local` → not found, no rename redirect; raw URLs under the old name 404).
+  An earlier note here claimed the GitHub name was still `astramemory-local` and only the local
+  folder had been renamed — that was stale; README/package.json URLs pointing at the old name were
+  dead and were fixed 2026-08-06. Local clone dir on this box is `C:\work\mega\astramem-local`.
 - `SECURITY.md` previously said "Only the `0.10.x` line is currently supported" — ten minor
   releases stale (pre-1.0, no LTS branch exists); corrected this run to a policy statement instead
   of a version number.
