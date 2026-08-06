@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { VecSearchWorkerHost, type VecWorkerLike } from '../../src/vector/vec-search-host.js';
+import { VecSearchWorkerHost, VecSearchTimeoutError, type VecWorkerLike } from '../../src/vector/vec-search-host.js';
 import type { VecHit } from '../../src/contracts/index.js';
 
 /** In-process fake worker — mirrors the protocol without an OS thread. */
@@ -81,10 +81,70 @@ describe('VecSearchWorkerHost', () => {
     expect(host.fallbackCount).toBe(1);
   });
 
-  it('falls back when the worker never answers (search timeout)', async () => {
-    const { host, fallbackHits } = makeHost(new FakeWorker('silent'));
+  // ---------------------------------------------------------------------------
+  // Search timeout: THROW, never fall back.
+  //
+  // This reverses the original behaviour (which fell back to the synchronous
+  // main-thread scan on a search timeout, same as every other failure). The
+  // fallback runs the SAME query that just blew the timeout, on the event loop
+  // — so it blocks for at least that long. Measured 2026-08-05: 30 occurrences
+  // of `vec search timed out after 30000ms`, 30-64s event-loop blocks
+  // (el_p99 ~70ms, el_max 64,391ms) on an IDLE box at 17% CPU, a 450,015ms gap
+  // in the 30s spool-drain tick, and watchdog kills of a daemon that really was
+  // unresponsive. Failing one search (callers degrade to FTS-only) is far
+  // cheaper than freezing capture, sync, jobs and doctor for a minute.
+  //
+  // Infrastructure failures still fall back — see the tests above/below.
+  // ---------------------------------------------------------------------------
+  it('throws VecSearchTimeoutError on search timeout instead of blocking the loop with a fallback scan', async () => {
+    const { host, getFallbackCalls } = makeHost(new FakeWorker('silent'));
+
+    await expect(host.search(vec, 5)).rejects.toBeInstanceOf(VecSearchTimeoutError);
+
+    expect(getFallbackCalls()).toBe(0); // the whole point: no main-thread scan
+    expect(host.fallbackCount).toBe(0);
+    expect(host.searchTimeoutCount).toBe(1);
+  });
+
+  it('carries the timeout budget on the error so callers need not string-match', async () => {
+    const { host } = makeHost(new FakeWorker('silent'));
+
+    await expect(host.search(vec, 5)).rejects.toMatchObject({
+      name: 'VecSearchTimeoutError',
+      timeoutMs: 300,
+    });
+  });
+
+  it('counts timeouts separately from fallbacks — they mean opposite things', async () => {
+    // A timeout means the offload WORKED and the query is too slow; a fallback
+    // means the offload itself failed. Conflating them hides which is happening.
+    const { host } = makeHost(new FakeWorker('silent'));
+    await expect(host.search(vec, 5)).rejects.toBeInstanceOf(VecSearchTimeoutError);
+    await expect(host.search(vec, 5)).rejects.toBeInstanceOf(VecSearchTimeoutError);
+
+    expect(host.searchTimeoutCount).toBe(2);
+    expect(host.fallbackCount).toBe(0);
+  });
+
+  it('still falls back when the worker is unavailable — infrastructure failure, query not implicated', async () => {
+    // Spawn failure is the case the fallback exists for: nothing has shown the
+    // QUERY to be slow, only that the worker could not be started.
+    const fallbackHits: VecHit[] = [{ id: 'fb-spawn', score: 0.25 }];
+    let fallbackCalls = 0;
+    const host = new VecSearchWorkerHost({
+      dbPath: 'unused.sqlite',
+      fallback: async () => { fallbackCalls++; return fallbackHits; },
+      workerFactory: () => { throw new Error('worker module missing'); },
+      spawnTimeoutMs: 200,
+      searchTimeoutMs: 300,
+    });
+
     const hits = await host.search(vec, 5);
+
     expect(hits).toBe(fallbackHits);
+    expect(fallbackCalls).toBe(1);
+    expect(host.fallbackCount).toBe(1);
+    expect(host.searchTimeoutCount).toBe(0);
   });
 
   it('falls back on worker crash and respawns on the next call', async () => {
