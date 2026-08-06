@@ -160,6 +160,19 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
               ...(healthState.eventLoopLag
                 ? { event_loop: healthState.eventLoopLag.snapshot() }
                 : {}),
+              // #484 follow-up: vec-offload counters. `search_timeouts`
+              // counts queries whose vec leg FAILED (hybrid search served
+              // FTS-only — silent recall degradation without this number);
+              // `fallbacks` counts worker-unavailable events served by the
+              // synchronous main-thread scan. O(1) property reads.
+              ...(healthState.vecSearch
+                ? {
+                    vec_search: {
+                      search_timeouts: healthState.vecSearch.searchTimeoutCount,
+                      fallbacks: healthState.vecSearch.fallbackCount,
+                    },
+                  }
+                : {}),
               // A2-lite (ADR-015): last unattended doctor-schedule result —
               // readable without a human present, per the ADR's binding rule.
               doctor: healthState.doctor,

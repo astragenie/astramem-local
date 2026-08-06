@@ -148,6 +148,7 @@ describe('GET /health — wire-level: doctor block + status agree, no regression
       lastFailCount: 1,
       lastInconclusiveCount: 0,
       lastFailNames: ['sqlite-vec extension loadable'],
+      lastEventLoop: null,
     };
     const cfg = defaultConfig();
     app = Fastify({ logger: false });
@@ -167,6 +168,7 @@ describe('GET /health — wire-level: doctor block + status agree, no regression
       lastFailCount: 1,
       lastInconclusiveCount: 0,
       lastFailNames: ['Dev no-auth mode'],
+      lastEventLoop: null,
     };
     const cfg = defaultConfig();
     app = Fastify({ logger: false });

@@ -45,11 +45,16 @@ export const MIN_WINDOW_AGE_MS = 60_000;
 
 function verdict(snap: EventLoopLagSnapshot, source: string, now: number): CheckResult {
   const windowAgeMs = now - snap.windowStartedAt;
+  // Same numbers on every branch (incl. inconclusive) — the schedule handler
+  // persists these into healthState.doctor.lastEventLoop so the measurement
+  // survives the monitor reset below instead of dying inside this message.
+  const data = { p99_ms: snap.p99Ms, mean_ms: snap.meanMs, max_ms: snap.maxMs, window_age_ms: windowAgeMs };
   if (windowAgeMs < MIN_WINDOW_AGE_MS) {
     return {
       ok: true,
       inconclusive: true,
       message: `event loop lag: window only ${Math.round(windowAgeMs / 1000)}s old (${source}) — too fresh to judge; p99 so far ${snap.p99Ms}ms`,
+      data,
     };
   }
   if (snap.p99Ms > P99_ALARM_MS || snap.maxMs > MAX_ALARM_MS) {
@@ -66,11 +71,13 @@ function verdict(snap: EventLoopLagSnapshot, source: string, now: number): Check
       fix:
         'Find the synchronous work: recent additions to job handlers, unyielded scans, sync sqlite calls on big ' +
         'tables (see ADR-019). daemon.live.log timestamp gaps bracket the stalls.',
+      data,
     };
   }
   return {
     ok: true,
     message: `event loop lag: p99 ${snap.p99Ms}ms (mean ${snap.meanMs}ms, max ${snap.maxMs}ms) over the last ${Math.round(windowAgeMs / 60_000)}min (${source})`,
+    data,
   };
 }
 
