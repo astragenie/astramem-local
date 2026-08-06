@@ -237,4 +237,63 @@ describe('ollama-embed', () => {
       expect(vecs[0]!.length).toBe(1024);
     }, 60_000);
   });
+
+  // ---------------------------------------------------------------------------
+  // keep_alive — cold-start avoidance
+  //
+  // Ollama evicts an idle model after its own 5-minute default, and the daemon
+  // embeds in bursts separated by long idle gaps, so without an explicit
+  // keep_alive every burst starts by paying a full model reload. Measured on
+  // the 2026-08-05 onnx->ollama switch: 26ms warm, 5,728ms after an idle
+  // unload, 11,353ms when the reload collided with daemon boot. That cold path
+  // is the entire cost difference against the in-process ONNX worker, which
+  // never unloads.
+  // ---------------------------------------------------------------------------
+  describe('keep_alive', () => {
+    function captureBodies(): { bodies: unknown[]; fetch: typeof fetch } {
+      const bodies: unknown[] = [];
+      const fn = vi.fn(async (_url: unknown, init?: RequestInit): Promise<Response> => {
+        bodies.push(JSON.parse(String(init?.body ?? '{}')));
+        return new Response(JSON.stringify({ embedding: makeEmbedVec(1024, 0) }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      });
+      return { bodies, fetch: fn as unknown as typeof fetch };
+    }
+
+    it('sends a default keep_alive so an idle model is not evicted between bursts', async () => {
+      const { bodies, fetch: f } = captureBodies();
+      globalThis.fetch = f;
+
+      await new OllamaEmbedProvider({ model: 'mxbai-embed-large' }).embed(['x']);
+
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]).toMatchObject({ model: 'mxbai-embed-large', keep_alive: '30m' });
+    });
+
+    it('honours a configured keep_alive override', async () => {
+      const { bodies, fetch: f } = captureBodies();
+      globalThis.fetch = f;
+
+      await new OllamaEmbedProvider({ model: 'mxbai-embed-large', keepAlive: '-1' }).embed(['x']);
+
+      expect(bodies[0]).toMatchObject({ keep_alive: '-1' });
+    });
+
+    it('still sends prompt and model alongside keep_alive', async () => {
+      // Guards the ONE-options-object class of bug called out in AGENTS.md's
+      // never-do list: a second spread silently dropping earlier fields.
+      const { bodies, fetch: f } = captureBodies();
+      globalThis.fetch = f;
+
+      await new OllamaEmbedProvider({ model: 'mxbai-embed-large' }).embed(['the prompt text']);
+
+      expect(bodies[0]).toEqual({
+        model: 'mxbai-embed-large',
+        prompt: 'the prompt text',
+        keep_alive: '30m',
+      });
+    });
+  });
 });

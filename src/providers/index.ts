@@ -228,7 +228,13 @@ function buildEmbedProvider(config: Config): EmbedProvider {
   const queryPrefix = resolveEmbedQueryPrefix(model, config.embedding.queryPrefix);
 
   if (provider === 'ollama') {
-    return new OllamaEmbedProvider({ baseUrl: config.ollama.baseUrl, model, dim, queryPrefix });
+    return new OllamaEmbedProvider({
+      baseUrl: config.ollama.baseUrl,
+      model,
+      dim,
+      queryPrefix,
+      keepAlive: config.ollama.keepAlive,
+    });
   }
 
   if (provider === 'onnx') {

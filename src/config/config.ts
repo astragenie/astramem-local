@@ -119,7 +119,11 @@ export interface Config {
   };
   vector: { store: 'sqlite-vec' | 'lancedb' };
   budget: { daily_usd: number };
-  ollama: { baseUrl: string };
+  /** `keepAlive` is Ollama's `keep_alive` duration for embed requests — how
+   *  long the model stays resident after a call. Optional: the provider
+   *  supplies DEFAULT_EMBED_KEEP_ALIVE when unset, so existing config.yaml
+   *  files written before this field still load unchanged. */
+  ollama: { baseUrl: string; keepAlive?: string };
   azure: { endpoint?: string; deployment?: string; apiVersion: string };
   /** Generic OpenAI-`/v1/chat/completions`-compatible provider (OpenAI API,
    * Groq, vLLM, LM Studio, ...). `apiKeyEnv` names the env var read for the

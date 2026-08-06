@@ -7,6 +7,11 @@ import { parseRetryAfterMs } from '../llm/retry-after.js';
 const EMBED_TIMEOUT_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 10_000;
 
+/** Default `keep_alive` for embed requests — see OllamaEmbedConfig.keepAlive.
+ *  30m comfortably spans the gaps between distill bursts without pinning the
+ *  model forever, which would contend with a locally-served LLM for VRAM. */
+export const DEFAULT_EMBED_KEEP_ALIVE = '30m';
+
 export interface OllamaEmbedConfig {
   baseUrl?: string;
   model?: string;
@@ -18,6 +23,23 @@ export interface OllamaEmbedConfig {
    * See EmbedProvider.queryPrefix (src/contracts/embed.ts) for the full
    * asymmetry contract. Defaults to '' (no prefix). */
   queryPrefix?: string;
+  /** How long Ollama keeps the embed model resident after each call, in its
+   * own duration syntax ('30m', '1h', '-1' for forever, '0' to unload
+   * immediately). Sent as `keep_alive` on every request.
+   *
+   * Ollama's own default is 5 minutes, and the daemon embeds in bursts
+   * separated by long idle gaps — so without this the model is evicted
+   * between bursts and the next call pays a full reload. Measured on the
+   * 2026-08-05 onnx->ollama switch: 26ms warm vs 5,728ms after an idle
+   * unload, and 11,353ms when the reload collided with daemon boot. That
+   * cold path is the whole cost difference against the in-process ONNX
+   * worker, which never unloads.
+   *
+   * mxbai-embed-large's quantized artifact is a few hundred MB, so holding
+   * it resident is cheap next to an 8GB VRAM budget — but it is NOT free if
+   * a local LLM is also loaded, which is why this is configurable rather
+   * than pinned to '-1'. */
+  keepAlive?: string;
 }
 
 interface OllamaEmbedResponse {
@@ -74,12 +96,14 @@ export class OllamaEmbedProvider implements EmbedProvider {
   readonly dim: number;
   readonly queryPrefix: string;
   private readonly baseUrl: string;
+  private readonly keepAlive: string;
 
   constructor(config: OllamaEmbedConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
     this.model = config.model ?? 'mxbai-embed-large';
     this.dim = config.dim ?? DEFAULT_EMBED_DIM;
     this.queryPrefix = config.queryPrefix ?? '';
+    this.keepAlive = config.keepAlive ?? DEFAULT_EMBED_KEEP_ALIVE;
   }
 
   async embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]> {
@@ -93,7 +117,7 @@ export class OllamaEmbedProvider implements EmbedProvider {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ model: this.model, prompt: text }),
+          body: JSON.stringify({ model: this.model, prompt: text, keep_alive: this.keepAlive }),
         },
         EMBED_TIMEOUT_MS,
         signal,
