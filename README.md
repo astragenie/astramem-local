@@ -6,6 +6,108 @@
 
 Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). See the npm badge above or [CHANGELOG.md](CHANGELOG.md) for the current release — this README doesn't hardcode a version number, it goes stale every release.
 
+## Try it in 60 seconds
+
+No install beyond npm, no Ollama, nothing written to disk:
+
+```bash
+npm install -g astramem-local
+astramem-local demo
+```
+
+This boots an in-memory daemon, seeds 5 example memories (decision, fact, lesson, todo,
+preference) through a deterministic mock embed/LLM path, runs one sample recall against them, and
+keeps serving in the foreground until you hit Ctrl+C. When you're ready for persistent storage,
+run `astramem-local init` to install a real daemon.
+
+---
+
+## Why it exists
+
+Claude Code sessions compact and terminate, taking context with them. AstraMemory Local captures
+every session transcript, distills typed memories (decisions, facts, lessons, commands, todos),
+and serves them back via hybrid search (BM25 + vector + importance + freshness). It runs entirely
+on your workstation — no cloud account, no data leaves your machine. The plugin's hooks post to
+the local daemon instead of the SaaS endpoint through a single environment variable swap.
+
+---
+
+## Quick start
+
+**npm (recommended):**
+
+```bash
+npm install -g astramem-local
+astramem-local init
+# follow the wizard — picks embedding (ONNX in-process, default) and LLM (codex-subscription
+# default, or Ollama/Azure/Anthropic/OpenAI-compatible) providers, writes config.yaml + secrets.env
+astramem-local service install
+export MEMORY_API_URL=http://127.0.0.1:7777
+export MEMORY_BEARER=$(astramem-local token print)
+```
+
+Requires Node.js >= 20. Native deps (`better-sqlite3-multiple-ciphers`, `@napi-rs/keyring`) use
+prebuilt binaries where available, falling back to a from-source compile otherwise.
+
+### From source / org-internal
+
+> **Note:** this repo is private. The one-liner scripts and `git clone` below only work if you
+> (or your CI) already have read access to `astragenie/astramem-local` — an unauthenticated
+> `curl`/`irm` fetch of the raw script URL, or a `git clone` of the repo, will 404/403. If you
+> don't have repo access, use the npm install above instead.
+
+**One-liner install scripts** (do the Node check + npm install for you, then hand off to the
+wizard):
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/astragenie/astramem-local/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell 5.1+ or 7+)
+irm https://raw.githubusercontent.com/astragenie/astramem-local/main/install.ps1 | iex
+```
+
+If the script's own output is piped through a non-interactive shell, it stops after installing
+and tells you to run `astramem-local init` yourself — the wizard needs a real terminal to prompt
+for provider choice.
+
+**Build from a git clone:**
+
+```bash
+git clone https://github.com/astragenie/astramem-local.git
+cd astramem-local
+bun install
+bun run build
+node dist/cli/index.js init
+# follow the wizard — picks embedding (ONNX in-process, default) and LLM (codex-subscription
+# default, or Ollama/Azure/Anthropic/OpenAI-compatible) providers, writes config.yaml + secrets.env
+node dist/cli/index.js service install
+export MEMORY_API_URL=http://127.0.0.1:7777
+export MEMORY_BEARER=$(node dist/cli/index.js token print)
+```
+
+> **If you pick the Ollama LLM tier, first run can take 10-30 minutes** if Ollama isn't installed
+> yet. Since v0.18.0 the wizard's actual default LLM provider is `codex-subscription` (reuses an
+> existing `codex login` ChatGPT session — no local model download at all); Ollama is offered as
+> the free, fully-local alternative and becomes the pre-selected default when no Codex login is
+> detected. The Ollama LLM tier pulls `qwen2.5:7b` (~4.7 GB — the tested/recommended local
+> extraction model; the previously-tried `qwen3:8b` returned empty extraction output under
+> thinking mode and was dropped) plus `mxbai-embed-large` (~670 MB) if you also pick Ollama for
+> embedding — about **~5.4 GB** total download, with no separate confirmation prompt. Embedding
+> itself defaults to **ONNX** (bundled, in-process, no Ollama server required) regardless of
+> which LLM provider you choose. See [docs/providers.md](docs/providers.md) for the full
+> provider breakdown and RAM guidance.
+
+Restart Claude Code. All plugin hooks (PreCompact, SessionEnd, SubagentStop) now post to the
+local daemon. No other plugin changes needed.
+
+Prefer to try before installing anything? See [Try it in 60 seconds](#try-it-in-60-seconds) at the
+top of this README — `astramem-local demo` needs nothing from the rest of this section.
+
+---
+
 ## Wire compatibility
 
 The daemon's ingest endpoint now speaks the same wire protocol as the SaaS backend. Both old and new clients work:
@@ -42,91 +144,6 @@ Authorization: Bearer <token>
 ```
 
 Both shapes are accepted — no migration needed. See [contracts/wire.ts](contracts/wire.ts) for the complete schema definition.
-
-## Why it exists
-
-Claude Code sessions compact and terminate, taking context with them. AstraMemory Local captures
-every session transcript, distills typed memories (decisions, facts, lessons, commands, todos),
-and serves them back via hybrid search (BM25 + vector + importance + freshness). It runs entirely
-on your workstation — no cloud account, no data leaves your machine. The plugin's hooks post to
-the local daemon instead of the SaaS endpoint through a single environment variable swap.
-
----
-
-## Quick start
-
-**npm (recommended):**
-
-```bash
-npm install -g astramem-local
-astramem-local init
-# follow the wizard — picks embedding (ONNX in-process, default) and LLM (codex-subscription
-# default, or Ollama/Azure/Anthropic/OpenAI-compatible) providers, writes config.yaml + secrets.env
-astramem-local service install
-export MEMORY_API_URL=http://127.0.0.1:7777
-export MEMORY_BEARER=$(astramem-local token print)
-```
-
-Requires Node.js >= 20. Native deps (`better-sqlite3-multiple-ciphers`, `@napi-rs/keyring`) use
-prebuilt binaries where available, falling back to a from-source compile otherwise.
-
-**One-liner install scripts** (do the Node check + npm install for you, then hand off to the
-wizard):
-
-```bash
-# Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/astragenie/astramem-local/main/install.sh | bash
-```
-
-```powershell
-# Windows (PowerShell 5.1+ or 7+)
-irm https://raw.githubusercontent.com/astragenie/astramem-local/main/install.ps1 | iex
-```
-
-If the script's own output is piped through a non-interactive shell, it stops after installing
-and tells you to run `astramem-local init` yourself — the wizard needs a real terminal to prompt
-for provider choice.
-
-**From source (contributors, or if you want to build from a branch):**
-
-```bash
-git clone https://github.com/astragenie/astramem-local.git
-cd astramem-local
-bun install
-bun run build
-node dist/cli/index.js init
-# follow the wizard — picks embedding (ONNX in-process, default) and LLM (codex-subscription
-# default, or Ollama/Azure/Anthropic/OpenAI-compatible) providers, writes config.yaml + secrets.env
-node dist/cli/index.js service install
-export MEMORY_API_URL=http://127.0.0.1:7777
-export MEMORY_BEARER=$(node dist/cli/index.js token print)
-```
-
-> **If you pick the Ollama LLM tier, first run can take 10-30 minutes** if Ollama isn't installed
-> yet. Since v0.18.0 the wizard's actual default LLM provider is `codex-subscription` (reuses an
-> existing `codex login` ChatGPT session — no local model download at all); Ollama is offered as
-> the free, fully-local alternative and becomes the pre-selected default when no Codex login is
-> detected. The Ollama LLM tier pulls `qwen2.5:7b` (~4.7 GB — the tested/recommended local
-> extraction model; the previously-tried `qwen3:8b` returned empty extraction output under
-> thinking mode and was dropped) plus `mxbai-embed-large` (~670 MB) if you also pick Ollama for
-> embedding — about **~5.4 GB** total download, with no separate confirmation prompt. Embedding
-> itself defaults to **ONNX** (bundled, in-process, no Ollama server required) regardless of
-> which LLM provider you choose. See [docs/providers.md](docs/providers.md) for the full
-> provider breakdown and RAM guidance.
-
-Restart Claude Code. All plugin hooks (PreCompact, SessionEnd, SubagentStop) now post to the
-local daemon. No other plugin changes needed.
-
-### Try it first — no install, no Ollama
-
-`astramem-local demo` boots an in-memory daemon (nothing written to disk), seeds a handful of
-example memories through a deterministic mock embed/LLM path, runs one sample recall, and keeps
-serving in the foreground until you hit Ctrl+C — a 30-second way to see the product work before
-installing Ollama or running `init`:
-
-```bash
-astramem-local demo
-```
 
 ---
 
