@@ -46,11 +46,26 @@ export interface ServeOpts {
 }
 
 export async function serve(opts: ServeOpts): Promise<void> {
+  // Boot-phase timing (2026-08-06): a production boot spent ~6 MINUTES
+  // between process start and port bind with ZERO log output — every
+  // pre-bind step (config resolve, credential-store reads, SQLCipher open,
+  // lock acquire, migrate) was uninstrumented, so the slow phase could not
+  // be identified after the fact (the task-session credential-store wedge
+  // and WAL replay were both plausible and neither provable). One line per
+  // phase with a cumulative offset makes the next slow boot self-explaining.
+  // console.log so it lands in daemon-stdout.log under the service shim,
+  // same as the existing boot lines.
+  const bootT0 = Date.now();
+  const bootPhase = (name: string): void => {
+    console.log(`${ts()} [astramem-local] boot-phase: ${name} (+${Date.now() - bootT0}ms)`);
+  };
+  bootPhase('start');
   // Shared resolver: migrate-dirs + config.yaml + sync.json merge + the
   // canonical precedence (CLI > ASTRA_MEMORY_DATADIR > config.yaml > default).
   // doctor/backup/reinstall use the same resolver so diagnostics always look
   // at the same files as the daemon.
   const { cfg, port, dataDir, isolated } = resolveRuntimeConfig({ port: opts.port, dataDir: opts.dataDir });
+  bootPhase('config resolved');
   // SEC-10: CLI flag > env var > OS credential store > secrets.env
   // (canonical dir, then legacy dir) > 'devtok' default. A secrets.env-only
   // bearer is opportunistically promoted into the credential store.
@@ -58,6 +73,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     cliToken: opts.token,
     envToken: process.env.ASTRA_MEMORY_TOKEN,
   });
+  bootPhase('bearer token resolved (credential store)');
 
   const dbPath = dataDir === ':memory:' ? ':memory:' : join(dataDir, 'memory.sqlite');
   if (dataDir !== ':memory:') mkdirSync(dataDir, { recursive: true });
@@ -164,6 +180,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
    */
   const bootAndBind = async (): Promise<void> => {
     const bootStartedAt = Date.now();
+    bootPhase('lock acquired, opening DB (credential store + SQLCipher + WAL recovery)');
 
     // Assigns the outer `db` (declared above bootAndBind) — the WAL/oversize-
     // scan/spool-drain timers registered after boot need the same handle,
@@ -176,6 +193,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     db = opened.db;
     const dbKey = opened.dbKey;
     dbForCrash = db;
+    bootPhase('DB open');
 
     // ---------------------------------------------------------------------
     // DB-dependent boot work — everything that needs a MIGRATED schema
@@ -184,6 +202,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     // by both branches below; only its position relative to bind changes.
     // ---------------------------------------------------------------------
     const runMigrateAndDbSetup = async (): Promise<void> => {
+      bootPhase('migrate starting');
       // FEAT-409: dim only matters for a genuinely fresh DB — migrate() skips
       // already-applied migrations regardless, so this stays correct across
       // upgrades and restarts of an existing (already at some dim) DB.
@@ -388,6 +407,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
           console.log(`${ts()} astramem-local sync shipper active -> ${cfg.sync.url}`);
         }
       }
+      bootPhase('migrate + recovery + wiring done');
     };
 
     // Resolve providers: mock mode (CI/test) or real providers. Provider
@@ -461,6 +481,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     }
 
     const actualPort = Number(new URL(address).port);
+    bootPhase('port bound');
     console.log(`${ts()} astramem-local serving on ${host}:${actualPort}`);
 
     const bootMs = Date.now() - bootStartedAt;
@@ -486,6 +507,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     // holder (or a sibling that won the race) → AlreadyRunningError → exit 0
     // so schtasks keepalive re-runs are cheap no-ops.
     try {
+      bootPhase('acquiring instance lock');
       lock = await acquireInstanceLock(dataDir, port, PKG_VERSION, { bind: bootAndBind });
     } catch (err) {
       if (err instanceof AlreadyRunningError) {
@@ -1007,10 +1029,20 @@ export function openBootDb(dataDir: string, dbPath: string, cfg: Config): { db: 
     // and never touches the keystore.
     return { db: openDb(dbPath) };
   } else if (cfg.security.encryption.enabled) {
+    // Timed individually (2026-08-06 boot-phase instrumentation): the two
+    // known multi-minute pre-bind suspects live right here — a wedged
+    // task-session credential store (getOrCreateKey is a synchronous keyring
+    // read with no timeout) vs. SQLCipher open + WAL recovery on a ~1GB DB.
+    // One line each tells them apart after the fact.
+    const tKey = Date.now();
     const keyResult = getOrCreateKey(defaultConfigDir());
+    console.log(`${ts()} [astramem-local] boot-phase: DB key read from ${keyResult.source} (${Date.now() - tKey}ms)`);
     encryptIfPlaintext(dbPath, keyResult.key);
     try {
-      return { db: openDb(dbPath, { key: keyResult.key }), dbKey: keyResult.key };
+      const tOpen = Date.now();
+      const db = openDb(dbPath, { key: keyResult.key });
+      console.log(`${ts()} [astramem-local] boot-phase: SQLCipher open + WAL recovery (${Date.now() - tOpen}ms)`);
+      return { db, dbKey: keyResult.key };
     } catch (err) {
       throw rewrapWrongKeyError(err, dbPath, keyResult.source);
     }
