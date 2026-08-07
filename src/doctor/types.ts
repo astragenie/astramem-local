@@ -17,6 +17,16 @@ export interface CheckResult {
    * a new failure mode of its own.
    */
   inconclusive?: boolean;
+  /**
+   * Optional structured numbers backing the message (2026-08-05 forensics
+   * follow-up): the event-loop-lag check computes p99/mean/max every
+   * scheduled run and then threw them away — only the check NAME survived
+   * into healthState.doctor, so reconstructing a stall timeline meant
+   * regex-mining log messages. Checks that measure something put the raw
+   * numbers here so the schedule handler can persist/surface them without
+   * parsing prose. Renderers ignore it.
+   */
+  data?: Record<string, number>;
 }
 
 export interface Check {

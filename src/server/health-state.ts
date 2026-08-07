@@ -88,6 +88,22 @@ export interface DoctorScheduleHealth {
   lastInconclusiveCount: number;
   /** Names of checks that failed on the most recent run (either tier). */
   lastFailNames: string[];
+  /**
+   * Event-loop numbers from the most recent scheduled "Event loop lag" check
+   * (2026-08-05 forensics follow-up): the check reads-then-RESETS the monitor
+   * each run, so the live `event_loop` block on /health only ever shows the
+   * current partial window — the completed-window measurement existed for one
+   * instant inside the check and was discarded. Persisting it here gives
+   * every /health reader the last full doctor-cadence window alongside the
+   * live one. `null` until the first scheduled run completes.
+   */
+  lastEventLoop: {
+    p99Ms: number;
+    meanMs: number;
+    maxMs: number;
+    windowAgeMs: number;
+    measuredAt: number;
+  } | null;
 }
 
 /**
@@ -166,6 +182,18 @@ export interface HealthState {
    */
   eventLoopLag?: import('./event-loop-lag.js').EventLoopLagMonitor;
   /**
+   * Live vec-search offload counters (#484 follow-up) — set by serve.ts when
+   * it registers the KNN worker host, absent in non-daemon contexts. Two
+   * counters that mean OPPOSITE things (see VecSearchWorkerHost): a timeout
+   * means the offload worked and the QUERY is too slow — since #484 that
+   * search fails and hybrid search silently degrades to FTS-only, which is
+   * exactly why it must be visible here; a fallback means the worker itself
+   * was unavailable (spawn failure / crash) and the synchronous main-thread
+   * scan served instead. Structural subset of VecSearchWorkerHost so tests
+   * can hand-roll it.
+   */
+  vecSearch?: { readonly searchTimeoutCount: number; readonly fallbackCount: number };
+  /**
    * Pre-computed DB-backed /health fields (stabilization plan P1.3),
    * refreshed off the request path by serve.ts every 30s. When present,
    * the /health handler reads this instead of running its four sync SQLite
@@ -205,7 +233,7 @@ export function createHealthState(now: () => number = Date.now): HealthState {
     startedAt,
     embed: { ok: null, lastOkAt: null, lastError: null, attempts: 0 },
     worker: { lastTickAt: null },
-    doctor: { lastRunAt: null, lastTier: null, lastFailCount: 0, lastInconclusiveCount: 0, lastFailNames: [] },
+    doctor: { lastRunAt: null, lastTier: null, lastFailCount: 0, lastInconclusiveCount: 0, lastFailNames: [], lastEventLoop: null },
     ready: true,
     status(): DaemonStatus {
       if (!state.ready) return 'starting';

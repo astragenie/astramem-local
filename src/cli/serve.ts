@@ -360,6 +360,10 @@ export async function serve(opts: ServeOpts): Promise<void> {
         });
         const host = vecSearchHost;
         setVecSearchOffload((vec, k) => host.search(vec, k));
+        // #484 follow-up: a search timeout now FAILS the vec leg (hybrid
+        // search silently degrades to FTS-only for that query) — surface the
+        // counters on /health so that degradation is observable, not silent.
+        healthState.vecSearch = host;
       }
 
       // Sync shipper (ADR-003): one-way log shipping to the cloud ledger.
@@ -691,13 +695,35 @@ export async function serve(opts: ServeOpts): Promise<void> {
     embedProvider: providers.embed,
   };
   const handleDoctorResult = (result: DoctorScheduleResult): void => {
+    // Event-loop numbers survive the check's read-then-reset (2026-08-05
+    // forensics follow-up): the check attaches them as CheckResult.data —
+    // without this they only ever existed inside a prose message.
+    const elu = result.results.find(r => r.name === 'Event loop lag')?.data;
     healthState.doctor = {
       lastRunAt: result.ranAt,
       lastTier: result.tier,
       lastFailCount: result.failCount,
       lastInconclusiveCount: result.inconclusiveCount,
       lastFailNames: result.results.filter(r => !r.ok).map(r => r.name),
+      lastEventLoop:
+        elu && elu.p99_ms !== undefined
+          ? {
+              p99Ms: elu.p99_ms,
+              meanMs: elu.mean_ms ?? 0,
+              maxMs: elu.max_ms ?? 0,
+              windowAgeMs: elu.window_age_ms ?? 0,
+              measuredAt: result.ranAt,
+            }
+          : healthState.doctor.lastEventLoop,
     };
+    if (elu && elu.p99_ms !== undefined) {
+      // One structured line per scheduled window so the stall timeline is
+      // reconstructable from daemon logs alone — during the 2026-08-05
+      // forensics the only per-window history was regex-mined prose.
+      console.log(
+        `${ts()} [astramem-local] event-loop window: p99=${elu.p99_ms}ms mean=${elu.mean_ms}ms max=${elu.max_ms}ms window_s=${Math.round((elu.window_age_ms ?? 0) / 1000)}`,
+      );
+    }
     // ADR-015: a scheduled red that only reaches a log file nobody tails is
     // the same failure this ADR exists to kill — but it must ALSO land in a
     // structured, greppable log line for anyone who IS watching, not only
