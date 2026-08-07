@@ -11,7 +11,7 @@ import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import {
   recordCostEvent, computeDedupKey, findPriceVersion, addPriceVersion, correctPriceVersion,
-  costReport, listCostEvents, type CostEventInput,
+  costReport, listCostEvents, TIER_ASSUMPTION_NOTE, type CostEventInput,
 } from '../../src/storage/cost-events.js';
 import type { WorkflowStateWindow } from '../../src/storage/slice-attribution.js';
 
@@ -122,6 +122,49 @@ describe('recordCostEvent / computeDedupKey — AC-6 dedup + OTel preference', (
     const b = computeDedupKey({ provider: 'anthropic', model: 'claude-sonnet-5', capturedAtMs: 1_000_900, inputTokens: 10, outputTokens: 5, cacheReadInputTokens: null, cacheCreationInputTokens: null });
     expect(a).toBe(b); // within the same 5s bucket
   });
+
+  it('review finding 4 (MEDIUM): two captures 2ms apart straddling a floor-bucket boundary still dedupe to one row', () => {
+    // floor(4999/5000) = 0, floor(5001/5000) = 1 — DIFFERENT exact buckets,
+    // so computeDedupKey(a) !== computeDedupKey(b) on their own (asserted
+    // below), yet recordCostEvent must still treat them as the same
+    // exchange via the rolling ±1-bucket candidate check.
+    const a = computeDedupKey({ provider: 'anthropic', model: 'claude-sonnet-5', capturedAtMs: 4999, inputTokens: 77, outputTokens: 33, cacheReadInputTokens: null, cacheCreationInputTokens: null });
+    const b = computeDedupKey({ provider: 'anthropic', model: 'claude-sonnet-5', capturedAtMs: 5001, inputTokens: 77, outputTokens: 33, cacheReadInputTokens: null, cacheCreationInputTokens: null });
+    expect(a).not.toBe(b); // confirms this is a genuine boundary-straddle case, not a trivial no-op test
+
+    recordCostEvent(db, baseInput({ source: 'proxy', capturedAtMs: 4999, inputTokens: 77, outputTokens: 33, sessionKey: 'proxy-1' }));
+    const res = recordCostEvent(db, baseInput({ source: 'otel', capturedAtMs: 5001, inputTokens: 77, outputTokens: 33, sessionKey: 'real-session-1' }));
+
+    expect(res).toEqual({ inserted: false, preferred: true }); // recognized as the same exchange, otel preferred (AC-6)
+    expect(listCostEvents(db)).toHaveLength(1);
+  });
+
+  it('review finding 4: a rolling-window match prefers the row CLOSEST in time when more than one existing row is a candidate', () => {
+    // Two distinct existing rows TWO buckets apart (identical content is a
+    // deliberately accepted, bounded coincidence — see
+    // computeDedupKeyCandidates' doc) so neither collides with the other at
+    // ITS OWN insertion time (each row's own ±1-bucket window only reaches
+    // one neighbor): bucket 0 (capturedAtMs 0) and bucket 2 (capturedAtMs
+    // 10_000).
+    recordCostEvent(db, baseInput({ source: 'proxy', capturedAtMs: 0, inputTokens: 9, outputTokens: 9, sessionKey: 'proxy-far' }));
+    recordCostEvent(db, baseInput({ source: 'proxy', capturedAtMs: 10_000, inputTokens: 9, outputTokens: 9, sessionKey: 'proxy-near' }));
+    expect(listCostEvents(db)).toHaveLength(2);
+
+    // A new delivery at bucket 1 (capturedAtMs 9000) has candidate buckets
+    // [0, 1, 2] — BOTH existing rows match. Distance to the bucket-0 row
+    // (captured 0) is 9000ms; distance to the bucket-2 row (captured
+    // 10_000) is 1000ms — unambiguously closer. That row must be treated as
+    // the same exchange (and, since this delivery is 'otel', replaced per
+    // AC-6) — the far row must be left completely untouched.
+    const res = recordCostEvent(db, baseInput({ source: 'otel', capturedAtMs: 9000, inputTokens: 9, outputTokens: 9, sessionKey: 'real-session-x' }));
+    expect(res).toEqual({ inserted: false, preferred: true });
+
+    const rows = listCostEvents(db);
+    expect(rows).toHaveLength(2); // the otel row replaced the CLOSER proxy row, not added as a 3rd
+    expect(rows.some(r => r.sessionKey === 'proxy-far')).toBe(true); // untouched
+    expect(rows.some(r => r.sessionKey === 'real-session-x')).toBe(true); // replaced the near row
+    expect(rows.some(r => r.sessionKey === 'proxy-near')).toBe(false); // no longer present under its old identity
+  });
 });
 
 describe('findPriceVersion — AC-4 prefix match + honest miss', () => {
@@ -204,6 +247,59 @@ describe('AC-2: price correction vs genuine new price version', () => {
     const after = costReport(db, { workflowStateWindows: [] });
     expect(after.totalUsd).toBeCloseTo(1.0, 6); // unchanged — Jan event still prices at the old rate
   });
+
+  it('review finding 1 (HIGH): an event captured AFTER a genuine price change gets the NEW rate, not a stale still-open old row', () => {
+    addPriceVersion(db, {
+      provider: 'testco', model: 'test-model3', tier: 'standard', effectiveFrom: 0, effectiveTo: null,
+      inputRate: 0.000001, outputRate: 0.000001, cacheReadMultiplier: 1, cacheWriteMultiplier: 1,
+    });
+    addPriceVersion(db, {
+      provider: 'testco', model: 'test-model3', tier: 'standard',
+      effectiveFrom: Date.parse('2026-06-01T00:00:00.000Z'), effectiveTo: null,
+      inputRate: 0.00005, outputRate: 0.00005, cacheReadMultiplier: 1, cacheWriteMultiplier: 1,
+    });
+
+    // Captured well AFTER the price change.
+    recordCostEvent(db, baseInput({
+      provider: 'testco', model: 'test-model3', inputTokens: 1_000_000, outputTokens: 0,
+      capturedAtMs: Date.parse('2026-07-01T00:00:00.000Z'),
+    }));
+
+    const report = costReport(db, { workflowStateWindows: [] });
+    // Must be priced at the NEW rate (0.00005 * 1_000_000 = 50), not the
+    // stale old rate (0.000001 * 1_000_000 = 1) — reproduced by the
+    // reviewer as a real bug before this fix.
+    expect(report.totalUsd).toBeCloseTo(50, 4);
+  });
+
+  it('review finding 1: addPriceVersion closes the prior open row\'s effective_to so the two windows never overlap', () => {
+    const oldId = addPriceVersion(db, {
+      provider: 'testco', model: 'test-model4', tier: 'standard', effectiveFrom: 0, effectiveTo: null,
+      inputRate: 0.000001, outputRate: 0.000001, cacheReadMultiplier: 1, cacheWriteMultiplier: 1,
+    });
+    const changeAt = Date.parse('2026-06-01T00:00:00.000Z');
+    addPriceVersion(db, {
+      provider: 'testco', model: 'test-model4', tier: 'standard',
+      effectiveFrom: changeAt, effectiveTo: null,
+      inputRate: 0.00005, outputRate: 0.00005, cacheReadMultiplier: 1, cacheWriteMultiplier: 1,
+    });
+
+    const oldRow = db.prepare('SELECT effective_to FROM price_versions WHERE id = ?').get(oldId) as { effective_to: number | null };
+    expect(oldRow.effective_to).toBe(changeAt);
+  });
+
+  it('review finding 1: adding a price version for a DIFFERENT model never closes an unrelated model\'s open row', () => {
+    const siblingId = addPriceVersion(db, {
+      provider: 'testco', model: 'test-model5', tier: 'standard', effectiveFrom: 0, effectiveTo: null,
+      inputRate: 0.000001, outputRate: 0.000001, cacheReadMultiplier: 1, cacheWriteMultiplier: 1,
+    });
+    addPriceVersion(db, {
+      provider: 'testco', model: 'test-model5-pro', tier: 'standard', effectiveFrom: 0, effectiveTo: null,
+      inputRate: 0.00002, outputRate: 0.00002, cacheReadMultiplier: 1, cacheWriteMultiplier: 1,
+    });
+    const siblingRow = db.prepare('SELECT effective_to FROM price_versions WHERE id = ?').get(siblingId) as { effective_to: number | null };
+    expect(siblingRow.effective_to).toBeNull();
+  });
 });
 
 describe('costReport — AC-3 (unknown usage) / AC-4 (unpriced) / AC-8 (cache + truncated)', () => {
@@ -216,6 +312,33 @@ describe('costReport — AC-3 (unknown usage) / AC-4 (unpriced) / AC-8 (cache + 
     expect(report.unknownUsageCount).toBe(1);
     expect(report.totalUsd).toBe(0);
     expect(report.rows[0]!.status).toBe('unknown-usage');
+  });
+
+  it('review finding 2 (HIGH): outputTokens null while inputTokens present (SSE aborted after message_start) is a distinct partial-usage bucket, never $0-priced', () => {
+    recordCostEvent(db, baseInput({ inputTokens: 500, outputTokens: null }));
+    const report = costReport(db, { workflowStateWindows: [] });
+    expect(report.partialUsageCount).toBe(1);
+    expect(report.unknownUsageCount).toBe(0);
+    expect(report.totalUsd).toBe(0); // never fabricated from the half that IS present
+    expect(report.rows[0]!.status).toBe('partial-usage');
+    expect(report.rows[0]!.totalCostUsd).toBeNull();
+  });
+
+  it('review finding 2: inputTokens null while outputTokens present is ALSO partial-usage, never $0-priced', () => {
+    recordCostEvent(db, baseInput({ inputTokens: null, outputTokens: 200 }));
+    const report = costReport(db, { workflowStateWindows: [] });
+    expect(report.partialUsageCount).toBe(1);
+    expect(report.unknownUsageCount).toBe(0);
+    expect(report.totalUsd).toBe(0);
+    expect(report.rows[0]!.status).toBe('partial-usage');
+  });
+
+  it('review finding 2: a fully-priced row (both sides present) is unaffected — no false-positive partial-usage', () => {
+    recordCostEvent(db, baseInput({ inputTokens: 1000, outputTokens: 500 }));
+    const report = costReport(db, { workflowStateWindows: [] });
+    expect(report.partialUsageCount).toBe(0);
+    expect(report.rows[0]!.status).toBe('priced');
+    expect(report.totalUsd).toBeGreaterThan(0);
   });
 
   it('AC-4: an unpriced model is named, excluded from totals, and never priced at zero or a guessed default', () => {
@@ -318,5 +441,35 @@ describe('costReport — long-context named-gap warning', () => {
     expect(report.longContextWarningCount).toBe(1);
     expect(report.rows[0]!.status).toBe('priced'); // still priced, just flagged
     expect(report.rows[0]!.longContextWarning).toBe(true);
+  });
+});
+
+describe('costReport — review finding 3 (HIGH): loud tier-gap disclosure', () => {
+  it('tierAssumptionNote is ALWAYS present in the report output, even on an empty ledger', () => {
+    const db = makeDb();
+    const report = costReport(db, { workflowStateWindows: [] });
+    expect(report.tierAssumptionNote).toBe(TIER_ASSUMPTION_NOTE);
+    expect(report.tierAssumptionNote.length).toBeGreaterThan(0);
+    expect(report.tierAssumptionNote).toMatch(/standard/i);
+  });
+
+  it('tierAssumptionNote is present regardless of how many events are priced', () => {
+    const db = makeDb();
+    recordCostEvent(db, baseInput());
+    recordCostEvent(db, baseInput({ inputTokens: 1, sessionKey: 'proxy-2' }));
+    const report = costReport(db, { workflowStateWindows: [] });
+    expect(report.tierAssumptionNote).toBe(TIER_ASSUMPTION_NOTE);
+  });
+
+  it('findPriceVersion always defaults to standard tier when the caller omits tier — the seeded batch-tier rows are never matched by costReport', () => {
+    const db = makeDb();
+    // costReport never passes `tier`, so even though real batch-tier
+    // seed rows exist for claude-sonnet-5, a standard-priced row must be
+    // returned, never the (cheaper) batch rate.
+    const standard = findPriceVersion(db, { provider: 'anthropic', model: 'claude-sonnet-5', atMs: Date.now() });
+    const batch = findPriceVersion(db, { provider: 'anthropic', model: 'claude-sonnet-5', tier: 'batch', atMs: Date.now() });
+    expect(standard).not.toBeNull();
+    expect(batch).not.toBeNull();
+    expect(standard!.inputRate).toBeGreaterThan(batch!.inputRate); // standard is pricier than batch — proves they're genuinely different rows
   });
 });

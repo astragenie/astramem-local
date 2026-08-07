@@ -25,6 +25,9 @@ function printReport(report: CostReport): void {
   console.log('  AstraMemory Cost Ledger (FEAT-476 Phase 0)');
   console.log('  ────────────────────────────────────────────');
   console.log(`  Total (priced turns only): ${formatUsd(report.totalUsd)}`);
+  // Review finding 3: this caveat is ALWAYS printed, not conditional —
+  // every dollar figure above assumes standard-tier billing.
+  console.log(`  [!] ${report.tierAssumptionNote}`);
   console.log('');
 
   console.log('  By slice:');
@@ -58,6 +61,7 @@ function printReport(report: CostReport): void {
 
   console.log(`  Truncated replies: ${report.truncatedCount}`);
   console.log(`  Unknown-usage turns (excluded from totals): ${report.unknownUsageCount}`);
+  console.log(`  Partial-usage turns — only one side of input/output tokens present (excluded from totals): ${report.partialUsageCount}`);
   const unpricedKeys = Object.keys(report.unpricedModels);
   const unpricedTotal = unpricedKeys.reduce((sum, k) => sum + report.unpricedModels[k]!, 0);
   console.log(`  Unpriced-model turns (excluded from totals): ${unpricedTotal}`);

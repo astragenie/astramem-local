@@ -58,11 +58,23 @@ CREATE INDEX idx_cost_events_model ON cost_events(model);
 CREATE INDEX idx_cost_events_slice_id ON cost_events(slice_id);
 
 -- price_versions
---   - `tier` distinguishes standard/priority/batch billing (Anthropic
---     Priority Tier is billed separately and excluded from Anthropic's own
---     Cost API — a row with no `tier: 'priority'` price_versions entry
---     stays unpriced rather than silently falling back to standard, per the
---     FEAT-476 accuracy-trap checklist).
+--   - `tier` distinguishes standard/priority/batch billing. IF a caller ever
+--     queries with `tier: 'priority'` and no matching row exists, the query
+--     correctly returns unpriced rather than silently falling back to
+--     standard (per the FEAT-476 accuracy-trap checklist) — BUT review
+--     finding 3 (2026-08): `cost_events` (above) has NO tier column at all
+--     in Phase 0, because body-only proxy capture and Claude Code's
+--     documented OTel schema neither one carries a service-tier signal.
+--     Every call site in src/storage/cost-events.ts's `costReport`
+--     therefore OMITS `tier` entirely, which defaults to `'standard'`
+--     inside `findPriceVersion` — meaning a turn ACTUALLY billed at
+--     Anthropic's Priority Tier or either provider's Batch API is priced AS
+--     STANDARD, unconditionally, in Phase 0. This is the loud
+--     acknowledgment: it is a real accuracy gap, not a theoretical one, and
+--     `CostReport.tierAssumptionNote` surfaces it in every report's output
+--     (not just here) so it can't be missed by not reading source comments.
+--     The seeded `'batch'`-tier rows below are correct-and-ready but INERT
+--     until a future slice adds real tier detection to the capture layer.
 --   - `input_rate`/`output_rate` are USD PER SINGLE TOKEN (not per million)
 --     — e.g. Anthropic Sonnet 5's published $2/MTok input becomes 0.000002
 --     here — so the report's dollar derivation is a plain multiplication
@@ -119,6 +131,14 @@ CREATE INDEX idx_price_versions_lookup ON price_versions(provider, model, tier, 
 -- `claude-sonnet-5`) and are matched by PREFIX at report time (see
 -- `findPriceVersion`), so a real captured id like `claude-sonnet-5-20260815`
 -- (if this provider ever adopts a date-suffixed scheme) still resolves.
+-- Review finding 5: a BARE row like 'claude-opus-5' or 'gpt-5' is a prefix
+-- of every dotted/suffixed sibling too (e.g. a hypothetical
+-- 'claude-opus-5.1' or 'gpt-5-turbo') — it acts as an IMPLICIT WILDCARD for
+-- any future model that happens to extend the string, not just a
+-- date-suffix variant of the exact named model. Usually harmless (a sibling
+-- model sharing a price is common), but a reviewer auditing a surprising
+-- price match should know a bare prefix row is doing double duty, not
+-- narrowly scoped to one model.
 -- Anthropic cache multipliers: read 0.1x (10% of input), write 1.25x (the
 -- 5-minute-TTL write price; the 1-hour-TTL 2x variant is a named Phase-0 gap
 -- — see FEAT-476 spec's accuracy-trap checklist, "long-context repricing"
@@ -150,7 +170,15 @@ VALUES
   ('anthropic', 'claude-opus-5',    'batch', 0, NULL, 0.0000025, 0.0000125, 1.0, 1.0, 'config', 1785974400000),
   ('anthropic', 'claude-sonnet-5',  'batch', 0, NULL, 0.000001,  0.000005,  1.0, 1.0, 'config', 1785974400000),
   ('anthropic', 'claude-haiku-4-5', 'batch', 0, NULL, 0.0000005, 0.0000025, 1.0, 1.0, 'config', 1785974400000),
-  -- OpenAI — standard tier
+  -- OpenAI — standard tier. Review finding 5: these cache_read_multiplier /
+  -- cache_write_multiplier values are currently DEAD DATA in practice —
+  -- src/capture/proxy.ts's extractUsageMetadata only ever populates
+  -- cache_read_input_tokens/cache_creation_input_tokens for Anthropic
+  -- responses (see that function's own doc comment), so an OpenAI
+  -- cost_events row's cache fields are always null and never reach these
+  -- multipliers at report time. Correct-and-ready for whenever OpenAI cache
+  -- extraction lands, not a bug today — kept as real published rates rather
+  -- than removed, so no future OpenAI-cache slice has to re-research them.
   ('openai', 'gpt-5.6-sol',   'standard', 0, NULL, 0.000005,   0.00003,   0.1, 1.25, 'config', 1785974400000),
   ('openai', 'gpt-5.6-terra', 'standard', 0, NULL, 0.000002,   0.000012,  0.1, 1.25, 'config', 1785974400000),
   ('openai', 'gpt-5.6-luna',  'standard', 0, NULL, 0.0000002,  0.0000012, 0.1, 1.25, 'config', 1785974400000),
