@@ -31,6 +31,7 @@ import type { ExtendedHandlerCtx } from '../pipeline/handler-ctx-ext.js';
 import { MemoryRepo } from '../storage/memories.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { drainIngestSpool } from '../ingest/spool-drain.js';
+import { drainCostSpool } from '../ingest/cost-spool-drain.js';
 import { sweepQuarantineRedaction } from '../ingest/spool.js';
 import type { DoctorCheckOpts } from '../doctor/checks.js';
 import { startFrequentDoctorSchedule, runFullDoctorChecks, type DoctorScheduleResult } from '../doctor/schedule.js';
@@ -108,6 +109,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   let cleanupTimer: NodeJS.Timeout | null = null;
   let oversizeScanTimer: NodeJS.Timeout | null = null;
   let spoolDrainTimer: NodeJS.Timeout | null = null;
+  let costSpoolDrainTimer: NodeJS.Timeout | null = null;
   let walTimer: NodeJS.Timeout | null = null;
   let vecSearchHost: import('../vector/vec-search-host.js').VecSearchWorkerHost | null = null;
   let shipper: ShipperHandle | null = null;
@@ -909,6 +911,31 @@ export async function serve(opts: ServeOpts): Promise<void> {
     spoolDrainTimer.unref();
   }
 
+  // FEAT-476 AC-5: same filesystem-driven-tick pattern as the ingest-spool
+  // drain immediately above, for the separate cost-spool
+  // (src/capture/cost-spool.ts) the proxy tee writes usage telemetry into.
+  // A distinct timer (not folded into runSpoolDrain) because the two spools
+  // are independent durable queues with independent failure modes — a
+  // cost-spool drain error must never stall transcript draining, and vice
+  // versa.
+  if (dataDir !== ':memory:') {
+    const COST_SPOOL_DRAIN_INTERVAL_MS = 30_000;
+    const runCostSpoolDrain = () => {
+      try {
+        const res = drainCostSpool(db, dataDir);
+        if (res.pending > 0) {
+          const t = setTimeout(runCostSpoolDrain, 1_000);
+          t.unref();
+        }
+      } catch (err) {
+        console.warn(`${ts()} [astramem-local] cost-spool drain failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    runCostSpoolDrain(); // boot pass — same AC-8 rationale as the ingest spool
+    costSpoolDrainTimer = setInterval(runCostSpoolDrain, COST_SPOOL_DRAIN_INTERVAL_MS);
+    costSpoolDrainTimer.unref();
+  }
+
   // WAL discipline (W1.5): with synchronous=NORMAL a hard crash loses the
   // un-checkpointed WAL tail. Checkpoint hourly so the at-risk window stays
   // small, and once more (TRUNCATE, see below) on graceful shutdown. Timer
@@ -951,6 +978,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       if (cleanupTimer) clearInterval(cleanupTimer);
       if (oversizeScanTimer) clearInterval(oversizeScanTimer);
       if (spoolDrainTimer) clearInterval(spoolDrainTimer);
+      if (costSpoolDrainTimer) clearInterval(costSpoolDrainTimer);
       if (shipper) await shipper.stop();
       if (vecSearchHost) {
         // Deregister BEFORE stopping: the module slot must never reference a

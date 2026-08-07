@@ -7,6 +7,7 @@ import { cliSearch, cliRecall, cliRemember, cliEntitiesList, cliEntitiesShow } f
 import { serviceCommand } from './service.js';
 import { doctorCommand } from './doctor.js';
 import { budgetCommand } from './budget.js';
+import { costCommand } from './cost.js';
 import { init } from './init.js';
 import { tokenCommand } from './token.js';
 import { backupCommand } from './backup.js';
@@ -148,6 +149,14 @@ async function main() {
     case 'budget': {
       // astramem-local budget [--reset]
       await budgetCommand(rest);
+      break;
+    }
+
+    case 'cost': {
+      // astramem-local cost report [--json] [--since 24h|7d]
+      // astramem-local cost drain
+      // astramem-local cost otel-ingest --file <otlp-json-logs-export.json>
+      await costCommand(rest);
       break;
     }
 
@@ -392,6 +401,17 @@ Commands:
   entities list [query] [--limit N]      Autocomplete known entities (FEAT-402)
   entities show <id>                     List every memory linked to entity <id>
   budget [--reset]                       Show today + month LLM spend vs cap
+  cost report [--json] [--since 24h|7d]  FEAT-476 cost ledger: dollars derived
+                                         at read time from cost_events x
+                                         price_versions (never stored). Drains
+                                         the proxy cost-spool first.
+  cost drain                             Manually drain the proxy cost-spool
+                                         into cost_events (normally automatic
+                                         on the daemon's own timer)
+  cost otel-ingest --file <path>         Ingest an OTLP/HTTP-JSON logs export
+                                         file (claude_code.api_request records)
+                                         — the preferred, richer-attribution
+                                         ingest path over the proxy tee
   backup [--out PATH] [--keep N] [--json] [--no-verify]
                                          Snapshot DB (verified by default); prune old
   restore <snapshot> [--no-restart]      Verified restore: stop daemon, swap DB in

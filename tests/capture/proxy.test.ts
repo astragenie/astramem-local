@@ -21,6 +21,7 @@ import {
   type ProxyCaptureEnvelope,
 } from '../../src/capture/proxy.js';
 import { listSpoolFiles } from '../../src/ingest/spool.js';
+import { listCostSpoolFiles, readCostSpoolEntry } from '../../src/capture/cost-spool.js';
 
 const GATE_OPTS = { minChars: 1, maxBytes: 1_000_000, dedupWindow: 20 };
 
@@ -907,5 +908,89 @@ describe('createProxyCaptureTee', () => {
     await new Promise((r) => setImmediate(r));
 
     expect(listSpoolFiles(dir)).toHaveLength(0);
+  });
+
+  describe('FEAT-476 AC-5: usage telemetry survives a relevance-gate discard', () => {
+    it('a too-short assistant reply gates out the WHOLE transcript exchange (unchanged FEAT-478 behavior), but a cost-spool entry is still written', async () => {
+      const dir = freshDataDir();
+      // Same repro shape as the FEAT-478 AC-1 test above: minChars gates the
+      // reply but not the longer question.
+      const askGate = { minChars: 20, maxBytes: 1_000_000, dedupWindow: 20 };
+      const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: askGate });
+      const sink = createTee();
+
+      sink('req', { chunk: Buffer.from(anthropicRequestBody('which compression codec does the ingest spool use')) });
+      sink('req', { end: true });
+      // 5 chars < minChars 50 — gated out, but the response body still
+      // carries real usage.
+      sink('res', { chunk: Buffer.from(anthropicResponseBodyNonStreamingWithUsage('gzip.', { inputTokens: 42, outputTokens: 7 })) });
+      sink('res', { end: true });
+      await new Promise((r) => setImmediate(r));
+
+      // Transcript behavior is UNCHANGED — nothing spools to the ingest
+      // spool (FEAT-478 Option A still applies).
+      expect(listSpoolFiles(dir)).toHaveLength(0);
+
+      // But the cost-spool entry survives — AC-5's whole point.
+      const costFiles = listCostSpoolFiles(dir);
+      expect(costFiles).toHaveLength(1);
+      const entry = readCostSpoolEntry(costFiles[0]!.path);
+      expect(entry).not.toBeNull();
+      expect(entry!.source).toBe('proxy');
+      expect(entry!.provider).toBe('anthropic');
+      expect(entry!.inputTokens).toBe(42);
+      expect(entry!.outputTokens).toBe(7);
+    });
+
+    it('a response with no recognizable conversational turn at all (turns.length === 0) still writes a cost-spool entry when usage is present', async () => {
+      const dir = freshDataDir();
+      const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: GATE_OPTS });
+      const sink = createTee();
+
+      // A tool-only response: extractResponseTurn returns null (no text
+      // block), so turns.length === 0 after the request's own user turn is
+      // ALSO absent (malformed/empty request here) — the very first
+      // early-return in finishCapture(). Usage is still present in the body.
+      sink('req', { chunk: Buffer.from('{}') }); // no messages[] at all -> no user turns
+      sink('req', { end: true });
+      sink('res', { chunk: Buffer.from(anthropicResponseBodyToolOnly()) });
+      sink('res', { end: true });
+      await new Promise((r) => setImmediate(r));
+
+      expect(listSpoolFiles(dir)).toHaveLength(0);
+      const costFiles = listCostSpoolFiles(dir);
+      expect(costFiles).toHaveLength(1);
+      const entry = readCostSpoolEntry(costFiles[0]!.path);
+      expect(entry!.inputTokens).not.toBeNull();
+    });
+
+    it('a normal exchange that DOES spool a transcript also writes a cost-spool entry — cost capture is additive, not exclusive', async () => {
+      const dir = freshDataDir();
+      const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: GATE_OPTS });
+      const sink = createTee();
+
+      sink('req', { chunk: Buffer.from(anthropicRequestBody('what is the daemon default port')) });
+      sink('req', { end: true });
+      sink('res', { chunk: Buffer.from(anthropicResponseBodyNonStreamingWithUsage('7777 by default.', { inputTokens: 10, outputTokens: 5 })) });
+      sink('res', { end: true });
+      await new Promise((r) => setImmediate(r));
+
+      expect(listSpoolFiles(dir)).toHaveLength(1);
+      expect(listCostSpoolFiles(dir)).toHaveLength(1);
+    });
+
+    it('no usage in the response body at all -> no cost-spool entry is written (nothing to record)', async () => {
+      const dir = freshDataDir();
+      const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: GATE_OPTS });
+      const sink = createTee();
+
+      sink('req', { chunk: Buffer.from('not json at all {') });
+      sink('req', { end: true });
+      sink('res', { chunk: Buffer.from('also not json {') });
+      sink('res', { end: true });
+      await new Promise((r) => setImmediate(r));
+
+      expect(listCostSpoolFiles(dir)).toHaveLength(0);
+    });
   });
 });
