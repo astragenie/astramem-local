@@ -46,6 +46,7 @@ import * as zlibFeatureProbe from 'node:zlib';
 import { stableStringify } from '../server/lib/stable-stringify.js';
 import { gateRelevance, recordCapturedTurnHash, hashTurnText, type RelevanceGateOptions } from './relevance-gate.js';
 import { writeToSpool } from '../ingest/spool.js';
+import { writeCostSpoolEntry } from './cost-spool.js';
 import type { ProxyTeeSink } from '../proxy/server.js';
 import { localIsoString } from './local-time.js';
 import type { Config } from '../config/config.js';
@@ -791,6 +792,55 @@ export function createProxyCaptureTee(opts: ProxyCaptureOptions): () => ProxyTee
       // though a request body is uncompressed in practice today.
       const reqBody = decompressBody(Buffer.concat(reqChunks)).toString('utf8');
       const resBody = decompressBody(Buffer.concat(resChunks)).toString('utf8');
+
+      // FEAT-476 AC-5: usage telemetry is captured HERE — before EITHER
+      // early-return below (empty turns, or an assistant reply the
+      // relevance gate discards) could otherwise silently discard it along
+      // with the transcript. Cost capture is fully decoupled from
+      // transcript capture from this point on: a gated-out reply or a
+      // response with no recognizable conversational turn at all (e.g. a
+      // tool-only reply) must never also erase the fact that real provider
+      // usage was billed for this exchange. Own try/catch so a cost-spool
+      // write failure here can never affect the (independent)
+      // transcript-capture path below, or the already-forwarded response
+      // (ADR-013 Decision 2's fail-silent-capture posture, applied here
+      // too). `extractUsageMetadata` is deliberately called AGAIN, on the
+      // same bodies, at its original call site below (a cheap, pure,
+      // side-effect-free re-derivation) rather than threading this result
+      // through as a parameter — keeps this addition a narrow, additive
+      // block with zero behavior change to any existing line in this
+      // function.
+      try {
+        const usageForCost = extractUsageMetadata(reqBody, resBody);
+        if (usageForCost) {
+          writeCostSpoolEntry(opts.dataDir, {
+            capturedAtMs: Date.now(),
+            provider: usageForCost.provider,
+            model: usageForCost.model,
+            inputTokens: usageForCost.input_tokens,
+            outputTokens: usageForCost.output_tokens,
+            cacheReadInputTokens: usageForCost.cache_read_input_tokens,
+            cacheCreationInputTokens: usageForCost.cache_creation_input_tokens,
+            stopReason: usageForCost.stop_reason,
+            truncated: usageForCost.truncated,
+            // No proxy-side session correlator exists (see this module's
+            // own header doc + ProxyCaptureEnvelope.session_id) — a fresh
+            // synthetic id per exchange, same convention the transcript
+            // envelope's own session_id already uses, independently minted
+            // (this cost event may be written even when no transcript
+            // envelope is, so it cannot reuse a value computed later).
+            sessionKey: `proxy-${randomUUID()}`,
+            // Body-only capture never carries an agent identity — always
+            // null for proxy-sourced cost events (FEAT-476 attribution-join
+            // contract; see src/storage/cost-events.ts).
+            agentRole: null,
+          });
+        }
+      } catch {
+        // Fail-silent capture (ADR-013 Decision 2) — this one exchange's
+        // cost telemetry is simply not recorded; never affects the already-
+        // completed forwarded response or the transcript-capture path below.
+      }
 
       const turns: ProxyTurn[] = extractRequestTurns(reqBody);
       const assistantTurn = extractResponseTurn(resBody);
