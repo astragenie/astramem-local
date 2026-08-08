@@ -48,12 +48,12 @@ jobs:
           fi
 
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: source
 
       - name: Checkout publish target
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: sergeymilashico/architecture
           token: ${{ secrets.ARCH_PUBLISH_TOKEN }}
