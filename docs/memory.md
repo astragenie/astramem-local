@@ -108,35 +108,52 @@ ADR-015's rate canary and the `auto-merge.yml` preflight. Regression test:
 archives from the worktree, deletes the worktree, asserts the archive survives under the primary
 checkout — fails on the pre-fix code).
 
-## Known open gaps (updated 2026-07-16, re-verify before quoting)
+## Known open gaps (updated 2026-11-05, re-verify before quoting)
 
 - **Provenance leak: Claude Code agent-worktree dir names stored as `project` (and sometimes `repo`)
-  (verified 2026-11-05).** 17,877 of 119,950 memories (15%) carry `project` like
-  `agent-a0112287d8dd8d401` — 270 distinct bogus "projects" polluting the dashboard project filter
-  (`SELECT DISTINCT project FROM memories`, `src/server/queries/dashboard.ts:276`). Cause: Claude Code
-  runs isolated agents in `<repo>/.claude/worktrees/agent-<id>/`; every astramem-plugin hook
-  (`session-end-summary.sh`, `subagent-stop-capture.sh`, `pre-compact-capture.sh`) sets
-  `PROJECT_ID="$(basename "$CWD")"`, and `POST /ingest/transcript` stores `project_id` verbatim
-  (`sessions` upsert, `routes/ingest.ts`). The daemon's own `deriveWorktreeSafeBasename()`
-  (`src/pipeline/cwd-basename.ts`) only knows the `<name>-worktrees/<x>` layout, not
-  `.claude/worktrees/<x>`, and is only a fallback when the client sent no project. `repo` leaks the
-  same way for ~5/11 affected sessions (git toplevel of a worktree = the worktree dir). Fix shape:
-  (a) plugin hooks derive project/repo from the main repo root (strip `/.claude/worktrees/<x>`, or
-  `git rev-parse --git-common-dir`), (b) daemon ingest re-derives when `project_id` equals the cwd
-  basename inside a worktree (defends against old plugins), (c) one-off backfill of the 17,877 rows
-  from `sessions.cwd`/`repo`. **Filed as FEAT-553 (P1, 6 proposed slices, 2026-11-05).** PM triage found this is
-  the unfinished half of CLOSED FEAT-484: `src/tag-hygiene/derive-repo.ts` + `src/tag-hygiene/repo-identity-backfill.ts`
-  (CLI exists, `DEFAULT_BAD_REPO_PATTERN` at :59) already re-stamp the `repo` column from `sessions.cwd` — the
-  `project` column and the `sessions` table were never covered, and `ingest.ts:468` still stores the client
-  `project_id` verbatim. Extend that backfill rather than writing a new one. PM triage corrections to the
-  FEAT text (2026-11-05): FEAT-484 resolves `repo` via `git rev-parse --git-common-dir`
-  (`src/tag-hygiene/repo-identity.ts` documents the gap) — git-based, so a string heuristic for `repo` is NOT
-  the fix; the two unfixed legs are (1) `project` never passes through derivation at all when the client sends
-  one (`derive-project.ts` returns the explicit value first), and (2) git cannot answer for worktrees already
-  deleted, which is why extending `deriveWorktreeSafeBasename` to `.claude/worktrees/<x>` is the keystone.
-  FEAT-484's backfill was never run against production (per its merge commit) — that is why a closed incident
-  still shows 15% corruption. "Zero `agent-*` rows after backfill" is unachievable by design (the backfill refuses
-  to guess when the worktree is gone and reports `unresolved`); the honest AC is remaining == reported unresolved.
+  — FEAT-553 in flight, SLICE-446 done (verified 2026-11-05).** 17,877 of 119,950 memories (15%)
+  carry `project` like `agent-a0112287d8dd8d401` — 270 distinct bogus "projects" polluting the
+  dashboard project filter (`SELECT DISTINCT project FROM memories`,
+  `src/server/queries/dashboard.ts:276`). Cause: Claude Code runs isolated agents in
+  `<repo>/.claude/worktrees/agent-<id>/`; every astramem-plugin hook (`session-end-summary.sh`,
+  `subagent-stop-capture.sh`, `pre-compact-capture.sh`) sets `PROJECT_ID="$(basename "$CWD")"`, and
+  `POST /ingest/transcript` stores `project_id` verbatim (`sessions` upsert, `routes/ingest.ts`).
+  The daemon's own `deriveWorktreeSafeBasename()` (`src/pipeline/cwd-basename.ts`) only knows the
+  `<name>-worktrees/<x>` layout, not `.claude/worktrees/<x>`, and is only a fallback when the client
+  sent no project. `repo` leaks the same way for ~5/11 affected sessions (git toplevel of a worktree
+  = the worktree dir). **Filed as FEAT-553 (P1, 6 proposed slices, 2026-11-05).** PM triage found
+  this is the unfinished half of CLOSED FEAT-484: `src/tag-hygiene/derive-repo.ts` +
+  `src/tag-hygiene/repo-identity-backfill.ts` (CLI exists, `DEFAULT_BAD_REPO_PATTERN` at :59)
+  already re-stamp the `repo` column from `sessions.cwd` — the `project` column and the `sessions`
+  table were never covered, and `ingest.ts:468` still stores the client `project_id` verbatim.
+  Extend that backfill rather than writing a new one. PM triage corrections to the FEAT text
+  (2026-11-05): FEAT-484 resolves `repo` via `git rev-parse --git-common-dir`
+  (`src/tag-hygiene/repo-identity.ts` documents the gap) — git-based, so a string heuristic for
+  `repo` is NOT the fix; the two unfixed legs are (1) `project` never passes through derivation at
+  all when the client sends one (`derive-project.ts` returns the explicit value first), and (2) git
+  cannot answer for worktrees already deleted, which is why extending `deriveWorktreeSafeBasename`
+  to `.claude/worktrees/<x>` is the keystone. FEAT-484's backfill was never run against production
+  (per its merge commit) — that is why a closed incident still shows 15% corruption. "Zero
+  `agent-*` rows after backfill" is unachievable by design (the backfill refuses to guess when the
+  worktree is gone and reports `unresolved`); the honest AC is remaining == reported unresolved.
+  **Cross-repo issue filed 2026-11-05 (SLICE-446): `astragenie/astramem-plugin#68`** — hook-side fix
+  is `git -C "$CWD" rev-parse --git-common-dir` with a string-strip fallback
+  (`/.claude/worktrees/<x>` or `/<name>-worktrees/<x>`) for the three capture hooks; the FEAT text's
+  `## Cross-repo` section carries the same reference. **DEC-017 policy** (trust rules for
+  string-derived project/repo identity when git can't answer because the worktree is already
+  deleted — written by sibling SLICE-443, see
+  `.claude/artifacts/loop/decisions/DEC-017.md`): (1) a string-derived value is trusted only for the
+  two tool-generated layouts `<repo>/.claude/worktrees/<x>` and `<repo>-worktrees/<x>` — any other
+  unresolvable shape stays `unresolved`, preserving the FEAT-484 never-guess guard; (2) ingest
+  overrides a client-sent `project_id` only when it equals `basename(cwd)` (the hook-produced
+  shape) — an explicit different label is stored verbatim (FEAT-553 AC-5); (3) every override /
+  re-stamp is observable via a log event carrying original, derived, and
+  `source: 'git-common-dir' | 'string-heuristic'` (AC-7), with paths logged as repo-root basenames
+  never absolute paths (AC-9); (4) `repo` gets the same string fallback as `project` when git is
+  unresolvable (FEAT-484 currently leaves those rows `unresolved`). Remaining slices
+  (SLICE-442/444/445/447) implement the daemon-side heuristic, ingest override, and backfill
+  extension against this policy; this is documentation/cross-repo scope only — no source change in
+  this repo.
 - **Agent provenance IS captured but the dashboard never exposes it.** `memories.agent` is populated
   from the SubagentStop payload's `agent_type` (98.7% coverage; 450 distinct values: `claude-code`
   105k main-session rows, then `crew:reviewer` 1180, `crew:fullstack-dev` 1158, `general-purpose` 613,

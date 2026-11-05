@@ -1,15 +1,16 @@
 ---
 id: SLICE-446
 title: Cross-repo astramem-plugin hook issue + docs/memory.md write-back
-status: pending
+status: completed
 feature: FEAT-553
 phase: null
 priority: P1
 target_release: null
-requires_validation: true
+requires_validation: false
 risk: high
 created: 2026-11-05
 updated: 2026-11-05
+completed_at: 2026-11-05
 effort_points: 1
 estimated_tokens: 60000
 touches_files:

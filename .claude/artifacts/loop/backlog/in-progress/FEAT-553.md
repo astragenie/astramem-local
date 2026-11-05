@@ -79,3 +79,14 @@ unset — this FEAT has not been scored yet. Run `/runner:triage`
 - SLICE-4: Extend backfill core to the project column and the sessions table, dry-run only (2 pts)
 - SLICE-5: Cross-repo astramem-plugin hook issue + docs/memory.md write-back (1 pts)
 - SLICE-6: Operator-gated prod apply with pre-apply backup + post-apply count verification (1 pts)
+
+## Cross-repo
+
+Hook-side fix for the `PROJECT_ID="$(basename "$CWD")"` pattern (`session-end-summary.sh`,
+`subagent-stop-capture.sh`, `pre-compact-capture.sh`) filed as
+`astragenie/astramem-plugin#68` (2026-11-05, SLICE-446). Proposed fix in the issue: derive
+project identity from `git -C "$CWD" rev-parse --git-common-dir` (resolves correctly from
+inside a linked worktree), falling back to a string strip of
+`/.claude/worktrees/<x>` / `/<name>-worktrees/<x>` when git can't answer (worktree already
+deleted). This repo's own ingest-side hardening (SLICE-442/443/444) is independent and does
+not block on the plugin-side fix landing.
