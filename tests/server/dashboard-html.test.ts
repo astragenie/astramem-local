@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import querystring from 'node:querystring';
 import { renderDashboard } from '../../src/server/routes/dashboard-html.js';
 import { defaultConfig } from '../../src/config/config.js';
+import { parseMemoryFilterParam } from '../../src/server/queries/dashboard.js';
 import type { DashboardData, DashboardHealth } from '../../src/server/queries/dashboard.js';
 
 // FEAT-410 SLICE-410-4: Mission Control rewrite of renderDashboard.
@@ -565,6 +567,43 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       }), config);
       expect(html).toContain('<th>Agent</th>');
       expect(html).toContain('crew:reviewer');
+    });
+
+    // FEAT-554 fix-wave regression (SLICE-448): simulate the actual
+    // two-same-name-field GET submission this markup produces, instead of
+    // constructing `memoryFilters` directly (every AC-1..AC-5 test above
+    // bypasses real form submission entirely — the gap an independent
+    // reviewer flagged). The <select> and free-text <input> both carry
+    // name="agent"; a browser serializes same-named controls in document
+    // order, so whichever one is left at its default blank value still
+    // contributes an empty entry to the query array.
+    it('AC-2 (end-to-end): picking a dropdown option and submitting with the free-text box left blank actually filters the feed', () => {
+      const html = renderDashboard(baseData({
+        filterOptions: { projects: [], profiles: [], agents: agentOptions },
+      }), config);
+      // Document-order precondition this scenario depends on: the <select>
+      // renders before the free-text <input>, so a real browser submits
+      // [selectedValue, ''] for name="agent" when the textbox is untouched.
+      const selectIdx = html.indexOf('<select name="agent">');
+      const inputIdx = html.indexOf('<input type="text" name="agent"');
+      expect(selectIdx).toBeGreaterThan(-1);
+      expect(inputIdx).toBeGreaterThan(selectIdx);
+
+      // The exact submission a browser produces for "pick crew:reviewer,
+      // leave the free-text box at its default" — reproduced with Node's
+      // own querystring parser, the same one Fastify's default parser wraps.
+      const submitted = querystring.parse('agent=crew%3Areviewer&agent=');
+      expect(parseMemoryFilterParam(submitted.agent)).toBe('crew:reviewer');
+    });
+
+    it('AC-2 (end-to-end): typing a free-text value while the select sits at its own blank default also resolves correctly', () => {
+      const submitted = querystring.parse('agent=&agent=custom-agent-name');
+      expect(parseMemoryFilterParam(submitted.agent)).toBe('custom-agent-name');
+    });
+
+    it('AC-2 (end-to-end): both controls at their default blank value on first load -> no agent filter', () => {
+      const submitted = querystring.parse('agent=&agent=');
+      expect(parseMemoryFilterParam(submitted.agent)).toBeUndefined();
     });
   });
 

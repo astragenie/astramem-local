@@ -71,3 +71,47 @@ Dashboard: add an `agent` filter dropdown so memories can be browsed by the agen
 
 - Reviewer A: ...
 - Reviewer B: ...
+
+## Fix wave (post-ship refutation, 2026-11-05)
+
+Independent verifiers refuted the original build on two points. Disposition below;
+fix commit on `main-SLICE-448` (fix-agent scope: `src/server/queries/dashboard.ts`,
+`src/server/routes/dashboard-html.ts`, both touched test files, plus this file).
+
+- **[ac-evidence] CONFIRMED and FIXED.** The `<select name="agent">` and the
+  free-text `<input name="agent">` share one name; a real GET submission
+  serializes same-named controls in document order, so picking a dropdown
+  option while leaving the free-text box at its default blank value produced
+  `agent=<picked>&agent=` — `parseMemoryFilterParam`'s old `raw[raw.length-1]`
+  ("last value wins", no blank-awareness) took the trailing blank entry and
+  silently dropped the filter. Verified via
+  `querystring.parse('agent=crew%3Areviewer&agent=')` → `{agent:
+  ['crew:reviewer','']}` fed through the real function → `undefined` (bug
+  reproduced), then → `'crew:reviewer'` (bug fixed). Fix: scan from the end of
+  the array for the last NON-blank entry instead of blindly taking the last
+  entry; multi-non-blank last-one-wins semantics (and the existing
+  `['repo-a','repo-b'] -> 'repo-b'` test) are unchanged. The builder's code
+  comment at the top of `renderMemoryFilterForm`'s agent block, which asserted
+  the select would win on this path, was factually backwards (HTML form
+  document-order serialization puts the free-text input's value LAST, not
+  the select's) — corrected to describe the actual (now fixed) resolution
+  order. New regression tests added in both touched test files reproduce the
+  real two-same-name-field submission via `node:querystring`, rather than
+  constructing `memoryFilters` directly — closing the "only the happy path is
+  tested" gap the reviewer flagged.
+- **[scope-safety] CONFIRMED, not remediated by this fix wave.**
+  `src/server/routes/dashboard.ts` (the route handler's
+  `agent: parseMemoryFilterParam(q['agent'])` wiring) is outside both this
+  slice's declared `touches_files` and this fix-agent's permitted scope
+  (`src/server/queries/dashboard.ts`, `src/server/routes/dashboard-html.ts`,
+  the two test files, plus artifacts/slice/FEAT files only). It is left
+  untouched by this fix commit — not reverted, because without it `?agent=`
+  never reaches `queryDashboard` and the feature would not work at all; not
+  edited, because it is outside this fix-agent's file permissions. Flagged
+  here for a human or a differently-scoped run to decide whether the
+  slice's `touches_files` should simply have included it from the start.
+  The review and validation artifacts for the original build are also
+  disclosed self-reviews (same agent, same run) — their PASS verdicts are
+  not independently corroborated; this fix wave's evidence (test runs,
+  build, contracts validation) is produced fresh, independently of those
+  artifacts' claims.

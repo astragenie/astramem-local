@@ -459,6 +459,37 @@ describe('project + profile columns and filters (dashboard memory-listing surfac
       expect(parseMemoryFilterParam(['repo-a', 'none'])).toBeNull();
       expect(parseMemoryFilterParam([])).toBeUndefined();
     });
+
+    // FEAT-554 fix-wave regression (SLICE-448): the agent filter's <select>
+    // and free-text <input> share name="agent", so a real browser GET
+    // submission produces exactly this two-element shape — one blank
+    // "default" control alongside the one the user actually touched.
+    // `raw[raw.length - 1]` ("last value wins", no blank-awareness) silently
+    // discarded a dropdown pick whenever the free-text box was left at its
+    // default blank value, which is the overwhelmingly common real
+    // interaction. Confirmed via Node's own parser:
+    //   querystring.parse('agent=crew%3Areviewer&agent=')
+    //     -> { agent: ['crew:reviewer', ''] }
+    it('repeated query key with one blank entry (the <select>+free-text <input> pairing) -> the non-blank value wins, not "last" blindly', () => {
+      // <select> (chosen value) rendered first, blank free-text <input> last
+      // — the dropdown-pick-with-untouched-textbox path, and the one every
+      // other AC-2/AC-3 test below exercises.
+      expect(parseMemoryFilterParam(['crew:reviewer', ''])).toBe('crew:reviewer');
+      // reverse order: free-text typed, <select> left at its own blank
+      // default — must keep working too.
+      expect(parseMemoryFilterParam(['', 'custom-agent-name'])).toBe('custom-agent-name');
+      // both controls blank (fresh page, immediate submit) -> no filter.
+      expect(parseMemoryFilterParam(['', ''])).toBeUndefined();
+      // the "none" sentinel picked from the <select>, free-text left blank.
+      expect(parseMemoryFilterParam(['none', ''])).toBeNull();
+    });
+
+    it('repeated query key with two non-blank values still resolves by last-one-wins (unchanged contract)', () => {
+      // Both controls carrying a real value (select picked AND free-text
+      // typed, e.g. edited after selecting) keeps the documented
+      // last-one-wins semantics — the free-text <input> is rendered last.
+      expect(parseMemoryFilterParam(['crew:reviewer', 'custom-agent-name'])).toBe('custom-agent-name');
+    });
   });
 
   describe('queryDashboard threads memoryFilters through end-to-end', () => {

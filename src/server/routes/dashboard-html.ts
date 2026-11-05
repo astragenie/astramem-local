@@ -419,18 +419,19 @@ function renderMemoryFilterForm(filters: MemoryListFilters, options: DashboardDa
   // reachable from the rendered page, not just from a hand-edited URL.
   //
   // Known tradeoff, accepted rather than reached for JS: both controls share
-  // name="agent" (per spec — parseMemoryFilterParam already resolves a
-  // repeated query key via last-value-wins), and a bare GET <form> has no
-  // declarative way to omit one control's value from submission. With the
-  // <select> rendered before the <input> here, the <select>'s value is
-  // submitted LAST and wins whenever the free-text box is left blank — the
-  // overwhelmingly common case, and the one every AC below actually
-  // exercises (picking an option, paging, the none sentinel). Typing into
-  // the free-text box while ALSO leaving the <select> at its own blank
-  // default does not currently override it in a single submission (the
-  // blank <select> value wins the same way) — reaching a capped-out value
-  // through the page still works by editing the resulting URL's ?agent=
-  // once, which is no worse than before this control existed.
+  // name="agent", and a bare GET <form> has no declarative way to omit one
+  // control's value from submission — a browser serializes same-named
+  // controls in document order, so whichever control the user leaves at its
+  // own blank default still contributes an empty entry alongside the one
+  // they actually used. parseMemoryFilterParam (queries/dashboard.ts) is
+  // what makes this safe regardless of DOM order: a repeated key resolves to
+  // the LAST NON-BLANK entry (not just "the last entry"), so picking an
+  // option and leaving the free-text box alone works (the overwhelmingly
+  // common case, and the one every AC below exercises), and so does typing
+  // into the free-text box while leaving the <select> at its own blank
+  // default. Only when BOTH controls carry a real value (edited after
+  // selecting) does last-one-wins apply, and the free-text <input> — being
+  // rendered after the <select> here — wins that tie.
   const matchedOption = filters.agent != null && options.agents.some(a => a.agent === filters.agent);
   const freeTextValue = filters.agent != null && !matchedOption ? filters.agent : '';
   const agentOptgroups = groupAgentOptions(options.agents).map(([label, agents]) => {

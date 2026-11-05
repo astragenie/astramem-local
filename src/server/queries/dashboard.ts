@@ -156,18 +156,44 @@ export interface MemoryListFilters {
  *  option in the filter `<select>` elements. Case-insensitive on the way in. */
 export const NONE_FILTER_VALUE = 'none';
 
-/** Parses one raw `?project=`/`?profile=` query value into a MemoryListFilters
- *  field: missing/blank -> `undefined` (no filter), the `NONE_FILTER_VALUE`
- *  sentinel -> `null` (match NULL rows), anything else -> the trimmed literal
- *  value to match exactly.
+/** Parses one raw `?project=`/`?profile=`/`?agent=` query value into a
+ *  MemoryListFilters field: missing/blank -> `undefined` (no filter), the
+ *  `NONE_FILTER_VALUE` sentinel -> `null` (match NULL rows), anything else ->
+ *  the trimmed literal value to match exactly.
  *
  *  Accepts `string[]` because Fastify's default querystring parser produces
  *  an array for a repeated key (`?project=a&project=b`) — the route's
  *  untyped `as Record<string, string | undefined>` cast hid that, and
- *  `raw.trim()` on an array threw an unhandled 500 (review finding). Last
- *  value wins, matching common last-one-wins query semantics. */
+ *  `raw.trim()` on an array threw an unhandled 500 (review finding).
+ *
+ *  Multiple non-blank entries resolve by last-one-wins, matching common
+ *  last-one-wins query semantics. But the agent filter's rendered form pairs
+ *  a `<select>` with a free-text `<input>` under the SAME name="agent" (one
+ *  as a capped-list picker, the other as the fallback for a value outside
+ *  that cap) — so the ordinary submission shape is "the control the user
+ *  touched, PLUS the other control's own untouched blank default", e.g.
+ *  `['crew:reviewer', '']` when a dropdown pick is submitted with the
+ *  free-text box left alone. Blindly taking the raw last entry made the
+ *  blank default silently win over a real selection whenever it happened to
+ *  be the later control in document order (SLICE-448 fix-wave: a dropdown
+ *  pick did nothing on this path). Scanning from the end for the last
+ *  NON-BLANK entry fixes that in both control orders while leaving
+ *  multi-non-blank last-one-wins semantics (and every existing single-value
+ *  caller) unchanged. */
 export function parseMemoryFilterParam(raw: string | string[] | undefined): string | null | undefined {
-  const single = Array.isArray(raw) ? raw[raw.length - 1] : raw;
+  let single: string | undefined;
+  if (Array.isArray(raw)) {
+    for (let i = raw.length - 1; i >= 0; i--) {
+      const candidate = raw[i];
+      if (typeof candidate === 'string' && candidate.trim() !== '') {
+        single = candidate;
+        break;
+      }
+    }
+    // every entry blank (or the array itself empty) -> single stays undefined
+  } else {
+    single = raw;
+  }
   if (typeof single !== 'string') return undefined;
   const trimmed = single.trim();
   if (trimmed === '') return undefined;
