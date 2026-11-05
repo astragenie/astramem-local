@@ -558,6 +558,31 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       expect(html).toContain('MEMORY_MARKER_VISIBLE');
     });
 
+    // AC-4 evidence gap (fix wave 2, SLICE-448): the test above only covers
+    // a filter that MATCHES something. This covers the zero-match half —
+    // an agent value present in neither the memories nor the failed jobs —
+    // which is the case that actually exercises isMemoryFilterActive's
+    // job-failure carve-out independent of whether anything matched. A
+    // store with other agents' memories plus a failed job present
+    // simultaneously must still render (no throw / HTTP-200-equivalent),
+    // show zero memory rows, and not leak the job-failure row in.
+    it('AC-4: an agent filter matching nothing renders successfully with an empty feed and no job-failure leak', () => {
+      const html = renderDashboard(baseData({
+        memoryFilters: { agent: 'does-not-exist-anywhere' },
+        recentFailedJobs: [
+          { id: 'j1', kind: 'distill', state: 'poison', last_error: 'JOB_MARKER_SHOULD_BE_HIDDEN', updated_at: Date.now() },
+        ],
+        // queryRecentMemories has already applied the agent filter server
+        // side by the time renderDashboard sees this data — a non-matching
+        // filter means the memories array arrives empty, not unfiltered.
+        recentMemories: [],
+      }), config);
+      expect(html).toContain('</html>');
+      expect(html).not.toContain('JOB_MARKER_SHOULD_BE_HIDDEN');
+      const tbody = html.slice(html.indexOf('<tbody'), html.indexOf('</tbody>'));
+      expect(tbody).not.toContain('<tr>');
+    });
+
     it('renders the agent value as a column in the recent-activity rows', () => {
       const html = renderDashboard(baseData({
         recentMemories: [{

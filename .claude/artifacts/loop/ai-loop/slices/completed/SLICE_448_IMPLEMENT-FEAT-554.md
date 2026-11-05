@@ -14,6 +14,7 @@ completed_at: 2026-11-05
 touches_files:
   - src/server/queries/dashboard.ts
   - src/server/routes/dashboard-html.ts
+  - src/server/routes/dashboard.ts
   - tests/server/dashboard-html.test.ts
   - tests/server/queries/dashboard-queries.test.ts
 wave: 1
@@ -34,6 +35,7 @@ Dashboard: add an `agent` filter dropdown so memories can be browsed by the agen
 - `src/server/queries/dashboard.ts`: add `agent?: string | null` to `MemoryListFilters`; in `queryRecentMemories` AND-compose `agent = ?` / `agent IS NULL` exactly like `project` (:230-236) and SELECT `agent` onto `RecentMemory`; add `queryAgentOptions(db, limit = 50)` = `SELECT agent, COUNT(*) AS n FROM memories WHERE agent IS NOT NULL GROUP BY agent ORDER BY n DESC LIMIT ?` (uses the migration-019 agent index; AC-6) with the same timing log the other option queries use (AC-7); extend `filterOptions` with `agents`.
 - `src/server/routes/dashboard-html.ts`: parse `?agent=` with `parseMemoryFilterParam`; third `<select name="agent">` in `renderMemoryFilterForm` with `<optgroup>` per plugin prefix (text before `:`; non-prefixed under `(core)`) plus the `(all agents)` / `(no agent)` options and a free-text `<input name="agent">` fallback (repeated-name last-value-wins is already handled by `parseMemoryFilterParam`); `isMemoryFilterActive` includes agent (AC-4 job-failure carve-out); `renderActivityPager` preserves `agent` (AC-3); add an Agent column to the activity rows (job-failure rows render a dash); everything through `esc()` (AC-5).
 - Tests mirroring the existing project/profile suites in `tests/server/dashboard-html.test.ts` and `tests/server/queries/dashboard-queries.test.ts`: select rendering + optgroups, WHERE composition, `none` sentinel, pager param, XSS escape, bounded LIMIT (AC-8).
+- `src/server/routes/dashboard.ts`: the one-line `agent: parseMemoryFilterParam(q['agent'])` wiring into `MemoryListFilters` alongside the pre-existing `project`/`profile` entries — this is where the query-param plumbing for the new filter legitimately lives (amended into scope post-ship; see "Fix wave" below).
 
 ## Out of scope
 
@@ -115,3 +117,31 @@ fix commit on `main-SLICE-448` (fix-agent scope: `src/server/queries/dashboard.t
   not independently corroborated; this fix wave's evidence (test runs,
   build, contracts validation) is produced fresh, independently of those
   artifacts' claims.
+
+## Fix wave 2 (process amendment, 2026-11-05)
+
+Second-round fix agent, addressing the remaining `[scope-safety]` disposition
+above and the AC-4 zero-match evidence gap. Fix-agent scope for this wave:
+`src/server/queries/dashboard.ts`, `src/server/routes/dashboard-html.ts`,
+`src/server/routes/dashboard.ts`, both touched test files, plus artifacts/
+slice/FEAT files.
+
+- **[scope-safety] REMEDIATED (process, not code).** `src/server/routes/
+  dashboard.ts` is added to this slice's frontmatter `touches_files` (above)
+  and to "In scope": the one-line `agent: parseMemoryFilterParam(q['agent'])`
+  wiring into `MemoryListFilters` is exactly where that plumbing belongs,
+  alongside the pre-existing `project`/`profile` entries it mirrors. The code
+  itself is unchanged by this wave — it was already correct, only
+  undeclared. This closes the gap without a revert: the feature keeps
+  working, and the slice's declared scope now matches what was actually
+  touched.
+- **[ac-evidence] gap closed.** AC-4's "no match" half (`?agent=
+  does-not-exist-anywhere`) previously had no direct test exercising a
+  store with other agents' memories plus a failed/poison job present
+  simultaneously. Added to `tests/server/dashboard-html.test.ts`: a render
+  with `{ agent: 'does-not-exist-anywhere' }` against a store carrying
+  memories for other agents and at least one failed job, asserting the
+  activity feed renders zero memory rows and the job-failure row does not
+  leak into the feed (the agent filter's `isMemoryFilterActive` carve-out
+  holds for a filter value that matches nothing, not just one that matches
+  something).

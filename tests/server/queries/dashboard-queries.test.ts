@@ -362,6 +362,18 @@ describe('project + profile columns and filters (dashboard memory-listing surfac
       expect(rows[0]!.project).toBe('repo-a');
       expect(rows[0]!.agent).toBe('crew:reviewer');
     });
+
+    // AC-4 evidence gap (fix wave 2, SLICE-448): a filter value matching
+    // none of the stored agents must return an empty result, not fall back
+    // to the unfiltered set — the zero-match half of AC-4, distinct from
+    // the "no filter applied" and "exact match" cases above.
+    it('a filter value matching no stored agent returns an empty array, not the unfiltered set', () => {
+      insertMemory(db, { project: null, session_id: null, agent: 'crew:reviewer' });
+      insertMemory(db, { project: null, session_id: null, agent: 'runner:pm' });
+
+      const rows = queryRecentMemories(db, { agent: 'does-not-exist-anywhere' });
+      expect(rows).toHaveLength(0);
+    });
   });
 
   describe('queryProjectOptions / queryProfileOptions', () => {
