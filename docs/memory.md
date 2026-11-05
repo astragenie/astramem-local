@@ -366,6 +366,13 @@ checkout — fails on the pre-fix code).
 
 ## Known debt (flagged, not blocking)
 
+- **`ASTRA_SKIP_CONSOLIDATE=1` is set in the operator's persistent shell environment on this box
+  (found 2026-11-05).** It silently short-circuits `runConsolidation()`, so a plain `bun run test`
+  loses the whole consolidation suite — 95 failures across 14 files on the first wave-1 full run,
+  down to 3 environmental `tests/service/shim.test.ts` timeouts once unset. Run the gate as
+  `env -u ASTRA_SKIP_CONSOLIDATE bun run test` (or remove the var from the user environment); the
+  FEAT-548 handoff already lists "must be unset" as a precondition.
+
 - **`docs/todo/v0.1.2.md`** — the sole file in `docs/todo/`, at a version 20+ releases behind
   current (`0.21.0`). Likely fully superseded; owner should confirm and delete.
 - **`docs/HANDOFF.md`** — a 2026-07-02 point-in-time snapshot (v0.6.0 state, 859 tests, SCHEMA_VERSION
