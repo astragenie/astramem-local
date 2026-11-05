@@ -8,6 +8,8 @@ import { type Config, defaultConfig } from '../../config/config.js';
 import { redactIfEnabled, type RedactionEvent } from '../../redact/index.js';
 import { recordRedactionEvents } from '../../storage/redaction-log.js';
 import { deriveRepoFromCwd, deriveRepoFromCwdAsync } from '../../tag-hygiene/derive-repo.js';
+import { resolveRepoIdentity, resolveRepoIdentityAsync } from '../../tag-hygiene/repo-identity.js';
+import { reconcileIngestProject } from '../../pipeline/derive-project.js';
 import { AtomSchema } from '../../distill/prompts/extract.js';
 
 // ---------------------------------------------------------------------------
@@ -249,6 +251,49 @@ function isCanonical(data: ParsedIngest): data is z.infer<typeof CanonicalIngest
   return 'wire_version' in data;
 }
 
+/**
+ * FEAT-553 / DEC-017 rule 2 — apply `reconcileIngestProject` at a
+ * session-upsert call site and, when it fires, emit the structured
+ * override log event DEC-017 rule 3 requires: `original`, `derived`, and
+ * `source`, with no absolute path in any field (rule 3 / AC-9 — `derived`
+ * is always a basename, never `cwd` itself; `cwd` is deliberately NOT
+ * logged here). `session_id` is NOT re-stated in the payload — `log` is
+ * REQUIRED to already carry it as a bound field (every call site below
+ * passes a `childLogger({ session_id, ... })` instance), matching this
+ * file's existing convention (e.g. the route's own `log` at
+ * `childLogger({ request_id, session_id })`) instead of duplicating the
+ * key on every call.
+ *
+ * `repo` MUST be the raw git-only signal (e.g. `resolveRepoIdentity`/
+ * `resolveRepoIdentityAsync`), not the already string-heuristic-merged
+ * `deriveRepoFromCwd` value — see `reconcileIngestProject`'s doc comment.
+ */
+function applyProjectOverride(
+  log: ReturnType<typeof childLogger>,
+  params: {
+    projectId: string | null | undefined;
+    cwd: string | null | undefined;
+    repo: string | null | undefined;
+  },
+): string | null {
+  const reconciled = reconcileIngestProject({
+    projectId: params.projectId,
+    cwd: params.cwd,
+    repo: params.repo,
+  });
+  if (reconciled.overridden) {
+    log.info(
+      {
+        original: params.projectId,
+        derived: reconciled.project,
+        source: reconciled.source,
+      },
+      'ingest project_id overridden',
+    );
+  }
+  return reconciled.project;
+}
+
 // ---------------------------------------------------------------------------
 // FEAT-449 — shared canonical-transcript ingest path. Extracted so the
 // durable ingest-spool drain worker (src/ingest/spool-drain.ts) can run
@@ -442,6 +487,20 @@ export function ingestCanonicalTranscript(
   // Hoisted above the transaction — see the `resolvedRepo` param doc above.
   const sessionRepo = resolvedRepo !== undefined ? resolvedRepo : deriveRepoFromCwd(data.cwd);
 
+  // FEAT-553 / DEC-017 rule 2: re-derive `project_id` only when it is the
+  // raw hook-produced basename(cwd) shape (see applyProjectOverride doc
+  // comment). `resolveRepoIdentity` is memoized per-cwd
+  // (src/tag-hygiene/repo-identity.ts) and `sessionRepo` above already
+  // resolved (or attempted to resolve) this exact cwd, so this is always a
+  // cache hit here — never a second `git` spawn.
+  const gitRepoForOverride = resolveRepoIdentity(data.cwd);
+  const overrideLog = childLogger({ session_id: data.session_id });
+  const sessionProject = applyProjectOverride(overrideLog, {
+    projectId: data.project_id,
+    cwd: data.cwd,
+    repo: gitRepoForOverride,
+  });
+
   const tx = db.transaction(() => {
     if (idempotencyKey !== null) {
       stmtInsertIdempotency.run(idempotencyKey, bodyHash, '__pending__', now);
@@ -465,7 +524,7 @@ export function ingestCanonicalTranscript(
       }
     }
 
-    stmtUpsertSession.run(data.session_id, sessionRepo, data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
+    stmtUpsertSession.run(data.session_id, sessionRepo, sessionProject, data.agent_type ?? null, data.cwd ?? null, now);
 
     transcriptId = randomUUID();
     stmtInsertTranscript.run(
@@ -775,11 +834,23 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
           // on `resolveRepoIdentityAsync`.
           const sessionRepo = await deriveRepoFromCwdAsync(data.cwd);
 
+          // FEAT-553 / DEC-017 rule 2 — same override as the transcript-kind
+          // path above; see `applyProjectOverride`'s doc comment.
+          // `resolveRepoIdentityAsync` shares its cache with the sync
+          // version and with `deriveRepoFromCwdAsync` above, so this is a
+          // cache hit, never a second `git` spawn.
+          const gitRepoForOverrideEvents = await resolveRepoIdentityAsync(data.cwd);
+          const sessionProject = applyProjectOverride(log, {
+            projectId: data.project_id,
+            cwd: data.cwd,
+            repo: gitRepoForOverrideEvents,
+          });
+
           try {
             const tx = db.transaction(() => {
               if (idempotencyKey !== null) claimIdempotencySlot(idempotencyKey, bodyHash, now);
 
-              stmtUpsertSession.run(data.session_id, sessionRepo, data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
+              stmtUpsertSession.run(data.session_id, sessionRepo, sessionProject, data.agent_type ?? null, data.cwd ?? null, now);
 
               transcriptId = randomUUID();
               stmtInsertTranscript.run(
@@ -992,8 +1063,19 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
       let transcriptId!: string;
       let jobId!: string;
 
+      // FEAT-553 / DEC-017 rule 2 — applied here too for consistency across
+      // all three session-upsert call sites, but the legacy envelope carries
+      // no `cwd` field at all, so this is always a no-op passthrough
+      // (reconcileIngestProject never overrides without a cwd to compare
+      // against).
+      const legacyProject = reconcileIngestProject({
+        projectId: project ?? null,
+        cwd: undefined,
+        repo: repo ?? null,
+      }).project;
+
       const tx = db.transaction(() => {
-        stmtUpsertSessionLegacy.run(session_id, repo ?? null, project ?? null, branch ?? null, agent ?? null, now);
+        stmtUpsertSessionLegacy.run(session_id, repo ?? null, legacyProject, branch ?? null, agent ?? null, now);
 
         transcriptId = randomUUID();
         stmtInsertTranscriptLegacy.run(transcriptId, session_id, source, redactedContent, now);

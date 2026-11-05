@@ -1,8 +1,36 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { buildApp } from '../../src/server/app.js';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { stableStringify } from '../../src/server/lib/stable-stringify.js';
+
+// ---------------------------------------------------------------------------
+// FEAT-553 AC-7: mocked log capture (same pattern as tests/server/
+// score-contract.test.ts) so the "ingest project_id overridden" structured
+// log event's fields can be asserted directly instead of scraping stdout.
+// Module-wide for this file (vi.mock is hoisted) — every other test in this
+// file keeps working identically, since logging here is a side channel with
+// no effect on any response/DB assertion.
+// ---------------------------------------------------------------------------
+const { childLoggerMock, infoMock, mockLog } = vi.hoisted(() => {
+  const infoMock = vi.fn();
+  const mockLog: Record<string, unknown> = {
+    info: infoMock,
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    trace: vi.fn(),
+    fatal: vi.fn(),
+  };
+  mockLog['child'] = vi.fn(() => mockLog);
+  const childLoggerMock = vi.fn(() => mockLog);
+  return { childLoggerMock, infoMock, mockLog };
+});
+
+vi.mock('../../src/log/logger.js', () => ({
+  logger: mockLog,
+  childLogger: childLoggerMock,
+}));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1011,5 +1039,155 @@ describe('captured_at_local_date (2026-07-13 timezone-offset bugfix)', () => {
       .prepare('SELECT captured_at_local_date FROM transcripts WHERE session_id = ?')
       .get('sess-tz-pre-fix-row') as { captured_at_local_date: string | null };
     expect(t.captured_at_local_date).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEAT-553 / DEC-017 — ingest-side project_id override at the session-upsert
+// call sites (SLICE-444). The real-git 'git-common-dir' source and
+// `sessions.repo` parity are exercised with a real worktree fixture in
+// tests/tag-hygiene/worktree-ingest-canary.test.ts (AC-1); these tests use a
+// worktree-SHAPED cwd that does not exist on disk, so `resolveRepoIdentity`
+// can't resolve via git and the override falls back to the string
+// heuristic (source: 'string-heuristic') — no git fixture needed here.
+// ---------------------------------------------------------------------------
+
+describe('ingest endpoint — FEAT-553 project_id override at session-upsert (DEC-017)', () => {
+  const WORKTREE_CWD = 'C:\\work\\mega\\astramem-local\\.claude\\worktrees\\agent-a0112287d8dd8d401';
+  const AGENT_BASENAME = 'agent-a0112287d8dd8d401';
+
+  it('AC-5: a deliberate project_id label that does not equal basename(cwd) is stored verbatim and never logged as an override', async () => {
+    infoMock.mockClear();
+    const { db, app } = makeApp();
+    const payload = {
+      ...CANONICAL_PAYLOAD,
+      session_id: 'sess-553-ac5',
+      project_id: 'my-deliberate-label',
+      cwd: WORKTREE_CWD,
+    };
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const session = db.prepare('SELECT project FROM sessions WHERE id = ?')
+      .get('sess-553-ac5') as { project: string | null };
+    expect(session.project).toBe('my-deliberate-label');
+
+    const overrideCalls = infoMock.mock.calls.filter(([, msg]) => msg === 'ingest project_id overridden');
+    expect(overrideCalls.length).toBe(0);
+  });
+
+  it('AC-7/AC-9: overriding project_id === basename(cwd) emits a structured log event carrying original/derived/source, with no absolute path in any field', async () => {
+    infoMock.mockClear();
+    childLoggerMock.mockClear();
+    const { db, app } = makeApp();
+    const payload = {
+      ...CANONICAL_PAYLOAD,
+      session_id: 'sess-553-ac7',
+      project_id: AGENT_BASENAME,
+      cwd: WORKTREE_CWD,
+    };
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const session = db.prepare('SELECT project FROM sessions WHERE id = ?')
+      .get('sess-553-ac7') as { project: string | null };
+    expect(session.project).toBe('astramem-local');
+    expect(session.project).not.toBe(AGENT_BASENAME);
+
+    const overrideCall = infoMock.mock.calls.find(([, msg]) => msg === 'ingest project_id overridden');
+    expect(overrideCall).toBeDefined();
+    const [fields, msg] = overrideCall as [Record<string, unknown>, string];
+    expect(msg).toBe('ingest project_id overridden');
+    expect(fields).toMatchObject({
+      original: AGENT_BASENAME,
+      derived: 'astramem-local',
+      source: 'string-heuristic',
+    });
+
+    // AC-9: every string field on the event is a basename -- no path
+    // separator and no absolute-path shape (so it can never embed the
+    // operator's home-directory name).
+    for (const value of Object.values(fields)) {
+      if (typeof value === 'string') {
+        expect(value).not.toContain('\\');
+        expect(value).not.toContain('/');
+      }
+    }
+
+    // `log` carries session_id as a BOUND field (applyProjectOverride does
+    // not re-state it in the payload above) -- assert the bindings passed
+    // to childLogger() rather than the .info() payload itself.
+    expect(childLoggerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ session_id: 'sess-553-ac7' }),
+    );
+  });
+
+  it('the events-kind (ADR-008) ingest path applies the same override (second session-upsert call site)', async () => {
+    infoMock.mockClear();
+    const { db, app } = makeApp();
+    const payload = {
+      event: 'session_end' as const,
+      session_id: 'sess-553-events',
+      project_id: AGENT_BASENAME,
+      cwd: WORKTREE_CWD,
+      kind: 'events' as const,
+      events: [
+        { type: 'fact' as const, text: 'astramem-local uses better-sqlite3' },
+      ],
+      client_scrub_applied: true,
+      client_scrub_hits: 0,
+      client_version: '0.6.0',
+      client_scrub_version: '1.2.0',
+      wire_version: 'v1.0',
+      captured_at: '2025-06-30T10:00:00.000Z',
+    };
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const session = db.prepare('SELECT project FROM sessions WHERE id = ?')
+      .get('sess-553-events') as { project: string | null };
+    expect(session.project).toBe('astramem-local');
+
+    const overrideCall = infoMock.mock.calls.find(([, msg]) => msg === 'ingest project_id overridden');
+    expect(overrideCall).toBeDefined();
+  });
+
+  it('the legacy envelope (no cwd field at all) never overrides project -- always a verbatim no-op (third session-upsert call site)', async () => {
+    infoMock.mockClear();
+    const { db, app } = makeApp();
+    const payload = {
+      ...LEGACY_PAYLOAD,
+      session_id: 'sess-553-legacy',
+      project: AGENT_BASENAME,
+    };
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const session = db.prepare('SELECT project FROM sessions WHERE id = ?')
+      .get('sess-553-legacy') as { project: string | null };
+    expect(session.project).toBe(AGENT_BASENAME);
+
+    const overrideCalls = infoMock.mock.calls.filter(([, msg]) => msg === 'ingest project_id overridden');
+    expect(overrideCalls.length).toBe(0);
   });
 });
