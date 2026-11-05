@@ -139,21 +139,18 @@ checkout — fails on the pre-fix code).
   **Cross-repo issue filed 2026-11-05 (SLICE-446): `astragenie/astramem-plugin#68`** — hook-side fix
   is `git -C "$CWD" rev-parse --git-common-dir` with a string-strip fallback
   (`/.claude/worktrees/<x>` or `/<name>-worktrees/<x>`) for the three capture hooks; the FEAT text's
-  `## Cross-repo` section carries the same reference. **DEC-017 policy** (trust rules for
+  `## Cross-repo` section carries the same reference. **DEC-017 (not yet written — verified
+  2026-11-05, do not quote as decided):** sibling SLICE-443 is scoped (frontmatter `status:
+  pending`) to add `.claude/artifacts/loop/decisions/DEC-017.md` — the trust-policy decision for
   string-derived project/repo identity when git can't answer because the worktree is already
-  deleted — written by sibling SLICE-443, see
-  `.claude/artifacts/loop/decisions/DEC-017.md`): (1) a string-derived value is trusted only for the
-  two tool-generated layouts `<repo>/.claude/worktrees/<x>` and `<repo>-worktrees/<x>` — any other
-  unresolvable shape stays `unresolved`, preserving the FEAT-484 never-guess guard; (2) ingest
-  overrides a client-sent `project_id` only when it equals `basename(cwd)` (the hook-produced
-  shape) — an explicit different label is stored verbatim (FEAT-553 AC-5); (3) every override /
-  re-stamp is observable via a log event carrying original, derived, and
-  `source: 'git-common-dir' | 'string-heuristic'` (AC-7), with paths logged as repo-root basenames
-  never absolute paths (AC-9); (4) `repo` gets the same string fallback as `project` when git is
-  unresolvable (FEAT-484 currently leaves those rows `unresolved`). Remaining slices
+  deleted. `find .claude/artifacts/loop/decisions/` shows only DEC-001..016; that file does not
+  exist in this worktree yet, so this entry carries no DEC-017 citation until SLICE-443 actually
+  lands — re-check `.claude/artifacts/loop/decisions/DEC-017.md` exists and supersede this bullet
+  with the real citation at that point, per this repo's own session protocol (CLAUDE.md:
+  re-verify a dated fact against its source before quoting it in a decision). Remaining slices
   (SLICE-442/444/445/447) implement the daemon-side heuristic, ingest override, and backfill
-  extension against this policy; this is documentation/cross-repo scope only — no source change in
-  this repo.
+  extension against whatever DEC-017 decides once it exists; SLICE-446 itself is
+  documentation/cross-repo scope only — no source change in this repo.
 - **Agent provenance IS captured but the dashboard never exposes it.** `memories.agent` is populated
   from the SubagentStop payload's `agent_type` (98.7% coverage; 450 distinct values: `claude-code`
   105k main-session rows, then `crew:reviewer` 1180, `crew:fullstack-dev` 1158, `general-purpose` 613,
