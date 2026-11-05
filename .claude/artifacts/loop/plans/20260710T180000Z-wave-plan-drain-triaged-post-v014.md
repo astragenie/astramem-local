@@ -3,7 +3,8 @@ title: Wave execution plan — drain triaged backlog after v0.14.0
 created: 2026-07-10T18:00:00Z
 author: lead session (post-v0.14.0 release)
 supersedes: 20260707T123000Z-wave-plan-stable-infra-plus-features.md
-status: active
+status: superseded
+superseded_by: 20261105T224000Z-wave-plan-provenance-553-agent-filter-554.md
 goal: complete all buildable triaged FEATs ASAP via max-parallel worktree waves, one-owner-per-file
 ---
 

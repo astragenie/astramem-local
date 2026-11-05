@@ -9,13 +9,15 @@ Volatile, dated facts agents keep rediscovering. **Supersede entries by editing 
 into it (dated corrections, incident narratives, current eval numbers) now lives, extracted during
 the 2026-07-21 agentic-setup rebuild.
 
-## Version / build status (verified 2026-08-02)
+## Version / build status (verified 2026-11-05)
 
-- **Current release: v0.21.0** (2026-07-23, `CHANGELOG.md` top entry) — 61 migrations (was 32 at
-  the 2026-07-21 check). npm `latest` dist-tag is 0.21.0; local prod daemon on this box is running
-  main tip (`358ad6d8`) at package version 0.21.0, `schema_version` 61. v0.22.0 cut is planned for
-  2026-08-03, pending the second event-loop-stall blocker verdict (see below) — do not cut it early
-  on the assumption the stall class is fully closed.
+- **Current tagged release: v0.22.1** (2026-08-06, `56e7f4c0`) — 63 migrations. Main tip is `be1a47b9`
+  (2026-08-19), 5 commits past the tag, and carries unreleased migration `064-cost-ledger.sql`
+  (FEAT-476 Phase 0, PR #491) — so main = schema 64 while v0.22.1 = schema 63. **Local prod daemon on
+  this box runs release `0.22.1+be1a47b9` (main tip, package version still 0.22.1, schema 64)** since
+  the 2026-11-05 recovery below; no commits landed between 2026-08-19 and 2026-11-05. npm `latest`
+  dist-tag not re-checked this session. Next release cut should bump the version (064 is a schema
+  change) — do not publish a second `0.22.1`.
   Re-verify against `CHANGELOG.md`'s top entry before quoting a version anywhere, it will drift
   again on the next release.
 - **README/providers.md truth pass** (PR #461, merged 2026-08-02): corrected the remaining
@@ -108,6 +110,43 @@ checkout — fails on the pre-fix code).
 
 ## Known open gaps (updated 2026-07-16, re-verify before quoting)
 
+- **Provenance leak: Claude Code agent-worktree dir names stored as `project` (and sometimes `repo`)
+  (verified 2026-11-05).** 17,877 of 119,950 memories (15%) carry `project` like
+  `agent-a0112287d8dd8d401` — 270 distinct bogus "projects" polluting the dashboard project filter
+  (`SELECT DISTINCT project FROM memories`, `src/server/queries/dashboard.ts:276`). Cause: Claude Code
+  runs isolated agents in `<repo>/.claude/worktrees/agent-<id>/`; every astramem-plugin hook
+  (`session-end-summary.sh`, `subagent-stop-capture.sh`, `pre-compact-capture.sh`) sets
+  `PROJECT_ID="$(basename "$CWD")"`, and `POST /ingest/transcript` stores `project_id` verbatim
+  (`sessions` upsert, `routes/ingest.ts`). The daemon's own `deriveWorktreeSafeBasename()`
+  (`src/pipeline/cwd-basename.ts`) only knows the `<name>-worktrees/<x>` layout, not
+  `.claude/worktrees/<x>`, and is only a fallback when the client sent no project. `repo` leaks the
+  same way for ~5/11 affected sessions (git toplevel of a worktree = the worktree dir). Fix shape:
+  (a) plugin hooks derive project/repo from the main repo root (strip `/.claude/worktrees/<x>`, or
+  `git rev-parse --git-common-dir`), (b) daemon ingest re-derives when `project_id` equals the cwd
+  basename inside a worktree (defends against old plugins), (c) one-off backfill of the 17,877 rows
+  from `sessions.cwd`/`repo`. **Filed as FEAT-553 (P1, 6 proposed slices, 2026-11-05).** PM triage found this is
+  the unfinished half of CLOSED FEAT-484: `src/tag-hygiene/derive-repo.ts` + `src/tag-hygiene/repo-identity-backfill.ts`
+  (CLI exists, `DEFAULT_BAD_REPO_PATTERN` at :59) already re-stamp the `repo` column from `sessions.cwd` — the
+  `project` column and the `sessions` table were never covered, and `ingest.ts:468` still stores the client
+  `project_id` verbatim. Extend that backfill rather than writing a new one. PM triage corrections to the
+  FEAT text (2026-11-05): FEAT-484 resolves `repo` via `git rev-parse --git-common-dir`
+  (`src/tag-hygiene/repo-identity.ts` documents the gap) — git-based, so a string heuristic for `repo` is NOT
+  the fix; the two unfixed legs are (1) `project` never passes through derivation at all when the client sends
+  one (`derive-project.ts` returns the explicit value first), and (2) git cannot answer for worktrees already
+  deleted, which is why extending `deriveWorktreeSafeBasename` to `.claude/worktrees/<x>` is the keystone.
+  FEAT-484's backfill was never run against production (per its merge commit) — that is why a closed incident
+  still shows 15% corruption. "Zero `agent-*` rows after backfill" is unachievable by design (the backfill refuses
+  to guess when the worktree is gone and reports `unresolved`); the honest AC is remaining == reported unresolved.
+- **Agent provenance IS captured but the dashboard never exposes it.** `memories.agent` is populated
+  from the SubagentStop payload's `agent_type` (98.7% coverage; 450 distinct values: `claude-code`
+  105k main-session rows, then `crew:reviewer` 1180, `crew:fullstack-dev` 1158, `general-purpose` 613,
+  `crew:researcher` 604, `runner:pm` 248, `caveman:cavecrew-investigator` 63, `devcrew:*` …; plugin
+  is the `<prefix>:` of the value). Recall/search already filter on it (`--agent`, `filters.agent`,
+  FEAT-423/424, index from migration 019) — only the dashboard lacks an agent dropdown (it has
+  project + profile only). Ad-hoc `Agent(name=…)` labels (`reviewer-420`, `arch-454`) land in the
+  same column, so a dropdown should group by plugin prefix or cap to top-N. **Filed as FEAT-554 (P2,
+  autonomous-safe, 8 ACs incl. XSS-escape + bounded top-N query, 2026-11-05).**
+
 - **Doctor DOES run unattended** — a **frequent 15-min** pass runs every `tier: 'cheap'` check
   (DB-only, no LLM/embed provider); metered LLM/embed probes piggyback the **existing 24h cleanup
   tick** (`tier: 'full'`) rather than a new interval (a tight interval on a real LLM call would be
@@ -129,6 +168,46 @@ checkout — fails on the pre-fix code).
   bug, don't debug the sync client for this.
 
 ## Known bugs — fixes in flight (verified 2026-08-02, re-verify before assuming these are still open)
+
+- **Distill pipeline was DEAD 2026-09-14 → 2026-11-05 (codex model retired); FIXED locally 2026-11-05,
+  code default still stale.** Every distill job failed deterministically with `HTTP 400 — {"detail":"The
+  'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account."}` — OpenAI dropped
+  `gpt-5.4-mini` from the ChatGPT-account Codex catalog between 2026-08-04 and 2026-09-14. 41 jobs poisoned,
+  0 memories created in ~90 days (store 117,538 active). Fix applied on this box: Codex CLI `npm i -g
+  @openai/codex@latest` (0.146.0 → 0.166.0, refreshes `~/.codex/models_cache.json` on first run);
+  `config.yaml` `llm.compaction.model` + `llm.extraction.model` → **`gpt-6-luna`** ("Fast and affordable
+  model for easier tasks" — the only cheap-tier slug left; catalog 2026-11-05: `gpt-6.1-sol` (codex
+  default), `gpt-6-astra`, `gpt-6.1-terra`, `gpt-6-sol`, `gpt-reserve`(hidden), `gpt-6-luna`,
+  `gpt-5.6-{sol,terra,luna}`, `codex-auto-review`; backup `config.yaml.bak-20261105-pre-gpt6`); the 33
+  poisoned distill jobs were moved poison→pending via `JobRepo.requeueForRetry` (no CLI exists for this —
+  `queue purge --poison` only deletes) and re-ran clean: 36/36 `gpt-6-luna` calls OK, p50 5.9s, max 23s,
+  atoms created again. The other 8 poison jobs (distill, 2026-08-20/21, transient `fetch failed` ×3 attempts) were also requeued for one more attempt (attempts=3 → a single failure re-poisons them); check `queue`. Side effect of the day's restart churn: doctor's **watchdog circuit breaker is OPEN** (3 kills in 6h: 20:25Z, 21:11Z, 21:14Z) — the watchdog will NOT hang-kill/restart the daemon until the 6h window clears.
+  **STILL OPEN (code):** `DEFAULT_MODEL = 'gpt-5.4-mini'` in `src/providers/llm/codex-subscription.ts`,
+  the `gpt-5.4-mini` defaults in `src/config/config.ts` (~L1098/1575/1606), and
+  `pickCheapestCodexModel()`'s `-mini` heuristic (no `-mini` slug exists anymore → it now "suggests"
+  `catalog[0]`) are all stale — a fresh `init` breaks out of the box until these move to `gpt-6-luna`
+  (or better: a catalog-driven default). Also the validator only warns at construction; a stale default
+  should probably fail `doctor` loudly.
+- **Checkout-CLI-migrates-prod footgun hit 2026-11-05 (issue #306 class).** Running `doctor`/`queue`/
+  `memory health` from the checkout's `dist/` (any `openRuntimeDb()` caller runs `migrate()`) applied the
+  unreleased `064-cost-ledger.sql` to the prod datadir; the pinned release `0.22.1+56e7f4c0` (schema 63)
+  then refused to boot after a config-change restart: `This datadir was migrated by a NEWER astramem-local
+  (DB schema 64) than the one now running (daemon schema 63)` (3 exits in 5 min). Recovery that worked:
+  `bun run build` (checkout `dist/` was stale from 2026-07-23!) → `reinstall` → release
+  `0.22.1+be1a47b9` (main tip, schema 64) now serves prod. Compare `ls migrations | tail -1` against the
+  installed release before pointing checkout CLI at the live datadir.
+- **`reinstall` prune-releases keeps the WRONG releases (found 2026-11-05).** With 4 releases present it
+  logged `kept 2 (0.22.1+be1a47b9, 0.15.1+nogit), pruned 2 (0.22.1+56e7f4c0, 0.22.0+fe23ee77)` — i.e. it
+  kept the oldest `+nogit` dir and deleted the two most recent prior releases, so `reinstall --rollback`
+  would now land on 0.15.1. Keep-order is not "newest 2" as documented; probably a lexical/mtime sort
+  quirk on the `+nogit` suffix. Unfixed.
+- **`reinstall` re-activates the FEAT-439 post-merge hook** (`core.hooksPath=scripts/git-hooks`) — it was
+  unset before 2026-11-05 and is set again now; it auto-reinstalls prod on any migrations/storage merge,
+  including local branch merges.
+- **Daemon restarts 2026-08-12 → 2026-09-15 were watchdog hang-kills, not crashes** (exit-history:
+  9 exits, codes `1`×8 then `1073807364`; watchdog-kills.jsonl has matching stamps 08-18, 09-11,
+  09-13, 09-14, plus one on 2026-11-05T20:25Z). Event-loop stall class still open: 31.9s max stall and
+  a 30s `vec search timed out` observed 2026-11-05 within 20 min of boot on v0.22.1.
 
 - **`auto-merge.yml` is silently broken.** The `enablePullRequestAutoMerge` GraphQL call fails to
   arm on every PR — the failure is caught as a warning so the workflow job still PASSes,
