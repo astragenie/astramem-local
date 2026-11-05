@@ -24,7 +24,7 @@ function baseData(overrides: Partial<DashboardData> = {}): DashboardData {
     entityLinkage: { entityCount: 0, unlinkedMemoryCount: 0 },
     health: null,
     memoryFilters: {},
-    filterOptions: { projects: [], profiles: [] },
+    filterOptions: { projects: [], profiles: [], agents: [] },
     ...overrides,
   };
 }
@@ -127,7 +127,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       memoryCounts: [{ type: 'fact', count: 10 }],
       recentMemories: Array.from({ length: 25 }, (_, i) => ({
         id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
-        session_id: null, created_at: Date.now() - i * 1000, project: null, profile: null,
+        session_id: null, created_at: Date.now() - i * 1000, project: null, profile: null, agent: null,
       })),
     }), config);
     // Old headers must be gone.
@@ -145,7 +145,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       ],
       recentMemories: Array.from({ length: 25 }, (_, i) => ({
         id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
-        session_id: null, created_at: Date.now() - i * 1000, project: null, profile: null,
+        session_id: null, created_at: Date.now() - i * 1000, project: null, profile: null, agent: null,
       })),
     }), config);
     expect(html).toContain('ollama embed timeout');
@@ -189,7 +189,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       const html = renderDashboard(baseData({
         recentMemories: [{
           id: 'm1', type: 'fact', text: longText, importance: 0.5, confidence: 0.5,
-          session_id: null, created_at: Date.now(), project: null, profile: null,
+          session_id: null, created_at: Date.now(), project: null, profile: null, agent: null,
         }],
       }), config);
       // Full text appears verbatim (HTML-escaped) inside a <pre>, not just
@@ -205,7 +205,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       const html = renderDashboard(baseData({
         recentMemories: [{
           id: 'm1', type: 'fact', text: nasty, importance: 0.5, confidence: 0.5,
-          session_id: null, created_at: Date.now(), project: null, profile: null,
+          session_id: null, created_at: Date.now(), project: null, profile: null, agent: null,
         }],
       }), config);
       expect(html).toContain('&lt;script&gt;');
@@ -236,8 +236,8 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     it('renders one copy button per expandable row, each reading its sibling <pre> rather than an embedded JS string', () => {
       const html = renderDashboard(baseData({
         recentMemories: [
-          { id: 'm1', type: 'fact', text: 'first memory text', importance: 0.5, confidence: 0.5, session_id: null, created_at: Date.now(), project: null, profile: null },
-          { id: 'm2', type: 'fact', text: 'second memory text', importance: 0.5, confidence: 0.5, session_id: null, created_at: Date.now() - 1000, project: null, profile: null },
+          { id: 'm1', type: 'fact', text: 'first memory text', importance: 0.5, confidence: 0.5, session_id: null, created_at: Date.now(), project: null, profile: null, agent: null },
+          { id: 'm2', type: 'fact', text: 'second memory text', importance: 0.5, confidence: 0.5, session_id: null, created_at: Date.now() - 1000, project: null, profile: null, agent: null },
         ],
       }), config);
       const copyButtons = html.match(/class="copy-btn"/g) ?? [];
@@ -263,7 +263,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     function manyMemories(count: number) {
       return Array.from({ length: count }, (_, i) => ({
         id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
-        session_id: null, created_at: Date.now() - i * 1000, project: null, profile: null,
+        session_id: null, created_at: Date.now() - i * 1000, project: null, profile: null, agent: null,
       }));
     }
 
@@ -328,7 +328,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       const html = renderDashboard(baseData({
         recentMemories: [{
           id: 'm1', type: 'fact', text: 'seed row', importance: 0.5, confidence: 0.5,
-          session_id: null, created_at: Date.now(), project: null, profile: null,
+          session_id: null, created_at: Date.now(), project: null, profile: null, agent: null,
         }],
       }), config);
       expect(html).toContain('<th>Project</th>');
@@ -341,7 +341,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       const html = renderDashboard(baseData({
         recentMemories: [{
           id: 'm1', type: 'fact', text: 'has project + profile', importance: 0.5, confidence: 0.5,
-          session_id: 's1', created_at: Date.now(), project: 'astramemory-local', profile: 'conversational',
+          session_id: 's1', created_at: Date.now(), project: 'astramemory-local', profile: 'conversational', agent: null,
         }],
       }), config);
       expect(html).toContain('astramemory-local');
@@ -352,7 +352,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       const html = renderDashboard(baseData({
         recentMemories: [{
           id: 'm1', type: 'fact', text: 'no project or profile', importance: 0.5, confidence: 0.5,
-          session_id: null, created_at: Date.now(), project: null, profile: null,
+          session_id: null, created_at: Date.now(), project: null, profile: null, agent: null,
         }],
       }), config);
       // Scoped to this row only — the page's fixed copy-to-clipboard script
@@ -366,7 +366,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       expect(rowHtml).toContain('<span class="muted">—</span>');
     });
 
-    it('renders — for job-failure rows, which have no project/profile of their own', () => {
+    it('renders — for job-failure rows, which have no project/profile/agent of their own', () => {
       const html = renderDashboard(baseData({
         recentFailedJobs: [
           { id: 'j1', kind: 'distill', state: 'poison', last_error: 'boom', updated_at: Date.now() },
@@ -374,14 +374,15 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       }), config);
       const rowHtml = html.slice(html.indexOf('boom'));
       const emdashes = rowHtml.slice(0, rowHtml.indexOf('</tr>')).match(/<td class="muted">—<\/td>/g) ?? [];
-      expect(emdashes.length).toBe(2);
+      // FEAT-554 added a third dash cell (agent) alongside project/profile.
+      expect(emdashes.length).toBe(3);
     });
 
     it('escapes project/profile values the same way other memory fields are escaped', () => {
       const html = renderDashboard(baseData({
         recentMemories: [{
           id: 'm1', type: 'fact', text: 'xss check', importance: 0.5, confidence: 0.5,
-          session_id: 's1', created_at: Date.now(), project: '<script>alert(1)</script>', profile: 'engineering',
+          session_id: 's1', created_at: Date.now(), project: '<script>alert(1)</script>', profile: 'engineering', agent: null,
         }],
       }), config);
       expect(html).not.toContain('<script>alert(1)</script>');
@@ -400,7 +401,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
 
     it('populates <select> options from filterOptions, not just the visible recentMemories rows', () => {
       const html = renderDashboard(baseData({
-        filterOptions: { projects: ['astramemory-local', 'other-repo'], profiles: ['engineering', 'conversational'] },
+        filterOptions: { projects: ['astramemory-local', 'other-repo'], profiles: ['engineering', 'conversational'], agents: [] },
       }), config);
       expect(html).toContain('<option value="astramemory-local"');
       expect(html).toContain('<option value="other-repo"');
@@ -411,7 +412,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     it('marks the active project option selected when a filter is applied', () => {
       const html = renderDashboard(baseData({
         memoryFilters: { project: 'astramemory-local' },
-        filterOptions: { projects: ['astramemory-local'], profiles: [] },
+        filterOptions: { projects: ['astramemory-local'], profiles: [], agents: [] },
       }), config);
       expect(html).toContain('<option value="astramemory-local" selected>');
     });
@@ -439,7 +440,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
         ],
         recentMemories: [{
           id: 'm1', type: 'fact', text: 'MEMORY_MARKER_VISIBLE', importance: 0.5, confidence: 0.5,
-          session_id: 's1', created_at: Date.now(), project: 'astramemory-local', profile: null,
+          session_id: 's1', created_at: Date.now(), project: 'astramemory-local', profile: null, agent: null,
         }],
       }), config);
       expect(html).not.toContain('JOB_MARKER_SHOULD_BE_HIDDEN');
@@ -458,13 +459,112 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     it('pagination links preserve the active project/profile filter', () => {
       const manyMemories = Array.from({ length: 20 }, (_, i) => ({
         id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
-        session_id: null, created_at: Date.now() - i * 1000, project: 'astramemory-local', profile: null,
+        session_id: null, created_at: Date.now() - i * 1000, project: 'astramemory-local', profile: null, agent: null,
       }));
       const html = renderDashboard(baseData({
         memoryFilters: { project: 'astramemory-local', profile: null },
         recentMemories: manyMemories,
       }), config, '1');
       expect(html).toContain('href="/dashboard?page=2&project=astramemory-local&profile=none"');
+    });
+  });
+
+  // FEAT-554: agent <select> (grouped by plugin prefix) + free-text fallback,
+  // mirroring the project/profile filter controls above.
+  describe('agent filter controls (FEAT-554)', () => {
+    const agentOptions = [
+      { agent: 'crew:reviewer', count: 1180 },
+      { agent: 'crew:fullstack-dev', count: 1158 },
+      { agent: 'runner:pm', count: 248 },
+      { agent: 'claude-code', count: 105005 },
+      { agent: 'general-purpose', count: 613 },
+    ];
+
+    it('AC-1: renders a third select named agent with optgroups grouped by plugin prefix, (core) for non-prefixed values', () => {
+      const html = renderDashboard(baseData({
+        filterOptions: { projects: [], profiles: [], agents: agentOptions },
+      }), config);
+      expect(html).toContain('<select name="agent">');
+      expect(html).toContain('<optgroup label="crew">');
+      expect(html).toContain('<optgroup label="runner">');
+      expect(html).toContain('<optgroup label="(core)">');
+      // core (non-prefixed) values land in the (core) group, not their own.
+      const coreGroup = html.slice(html.indexOf('<optgroup label="(core)">'), html.indexOf('</optgroup>', html.indexOf('<optgroup label="(core)">')));
+      expect(coreGroup).toContain('claude-code');
+      expect(coreGroup).toContain('general-purpose');
+    });
+
+    it('AC-2: marks the active agent option selected when a filter is applied', () => {
+      const html = renderDashboard(baseData({
+        memoryFilters: { agent: 'crew:reviewer' },
+        filterOptions: { projects: [], profiles: [], agents: agentOptions },
+      }), config);
+      expect(html).toContain('<option value="crew:reviewer" selected>');
+    });
+
+    it('marks the "none" option selected for the null (—) agent filter selection', () => {
+      const html = renderDashboard(baseData({ memoryFilters: { agent: null } }), config);
+      // Three selects now share the "none" sentinel value — scope to the
+      // agent select specifically.
+      const agentSelectHtml = html.slice(html.indexOf('<select name="agent">'), html.indexOf('</select>', html.indexOf('<select name="agent">')));
+      expect(agentSelectHtml).toContain('<option value="none" selected>');
+    });
+
+    it('AC-6: a free-text input fallback is present alongside the select, and pre-fills with a capped-out current value', () => {
+      const html = renderDashboard(baseData({
+        memoryFilters: { agent: 'reviewer-420' },
+        filterOptions: { projects: [], profiles: [], agents: agentOptions },
+      }), config);
+      expect(html).toContain('<input type="text" name="agent"');
+      // reviewer-420 has no matching <option> in agentOptions, so the
+      // free-text input carries it instead of silently dropping it.
+      expect(html).toContain('value="reviewer-420"');
+    });
+
+    it('AC-5: escapes an HTML-metacharacter-bearing agent value in the option list', () => {
+      const html = renderDashboard(baseData({
+        filterOptions: { projects: [], profiles: [], agents: [{ agent: 'reviewer-420<script>alert(1)</script>', count: 1 }] },
+      }), config);
+      expect(html).not.toContain('<script>alert(1)</script>');
+      expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    });
+
+    it('AC-3: pagination links preserve the active agent filter alongside project/profile', () => {
+      const manyMemories = Array.from({ length: 20 }, (_, i) => ({
+        id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
+        session_id: null, created_at: Date.now() - i * 1000, project: null, profile: null, agent: 'crew:reviewer',
+      }));
+      const html = renderDashboard(baseData({
+        memoryFilters: { agent: 'crew:reviewer' },
+        recentMemories: manyMemories,
+      }), config, '1');
+      expect(html).toContain('href="/dashboard?page=2&agent=crew%3Areviewer"');
+    });
+
+    it('AC-4: an agent filter excludes job-failure rows from the merged feed (they carry no agent of their own)', () => {
+      const html = renderDashboard(baseData({
+        memoryFilters: { agent: 'crew:reviewer' },
+        recentFailedJobs: [
+          { id: 'j1', kind: 'distill', state: 'poison', last_error: 'JOB_MARKER_SHOULD_BE_HIDDEN', updated_at: Date.now() },
+        ],
+        recentMemories: [{
+          id: 'm1', type: 'fact', text: 'MEMORY_MARKER_VISIBLE', importance: 0.5, confidence: 0.5,
+          session_id: null, created_at: Date.now(), project: null, profile: null, agent: 'crew:reviewer',
+        }],
+      }), config);
+      expect(html).not.toContain('JOB_MARKER_SHOULD_BE_HIDDEN');
+      expect(html).toContain('MEMORY_MARKER_VISIBLE');
+    });
+
+    it('renders the agent value as a column in the recent-activity rows', () => {
+      const html = renderDashboard(baseData({
+        recentMemories: [{
+          id: 'm1', type: 'fact', text: 'has agent', importance: 0.5, confidence: 0.5,
+          session_id: null, created_at: Date.now(), project: null, profile: null, agent: 'crew:reviewer',
+        }],
+      }), config);
+      expect(html).toContain('<th>Agent</th>');
+      expect(html).toContain('crew:reviewer');
     });
   });
 

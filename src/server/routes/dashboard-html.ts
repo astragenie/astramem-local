@@ -18,7 +18,7 @@
  * Target: < 20 KB gzipped.
  */
 
-import type { DashboardData, DashboardHealth, JobStateByKind, MemoryListFilters } from '../queries/dashboard.js';
+import type { AgentOptionCount, DashboardData, DashboardHealth, JobStateByKind, MemoryListFilters } from '../queries/dashboard.js';
 import { NONE_FILTER_VALUE } from '../queries/dashboard.js';
 import type { Config } from '../../config/config.js';
 import { PKG_VERSION, WIRE_VERSIONS_SUPPORTED, SCHEMA_VERSION } from '../lib/wire-meta.js';
@@ -130,6 +130,7 @@ details[open]>summary{color:#fff;white-space:normal;overflow:visible;text-overfl
 .mem-filter button:hover{background:#333}
 .mem-filter a{color:#3a7bd5;text-decoration:none}
 .mem-filter a:hover{text-decoration:underline}
+.mem-filter input[type=text]{background:#0f0f0f;color:#e0e0e0;border:1px solid #333;padding:2px 6px;font-family:monospace;font-size:12px}
 `.trim();
 
 // ---------------------------------------------------------------------------
@@ -359,13 +360,31 @@ function renderExpandable(fullText: string): string {
 
 const ACTIVITY_PER_PAGE = 15;
 
-/** True once either the project or profile filter has a value (including
+/** True once the project, profile, or agent filter has a value (including
  *  the '—'/none selection) — used both to decide whether job-failure rows
- *  stay in the merged feed (they have no project/profile of their own, so a
- *  filter view drops them rather than showing unfiltered rows a user asked
- *  to narrow) and to render the active `<select>` option / "clear" link. */
+ *  stay in the merged feed (they have no project/profile/agent of their
+ *  own, so a filter view drops them rather than showing unfiltered rows a
+ *  user asked to narrow) and to render the active `<select>` option /
+ *  "clear" link. */
 function isMemoryFilterActive(filters: MemoryListFilters): boolean {
-  return filters.project !== undefined || filters.profile !== undefined;
+  return filters.project !== undefined || filters.profile !== undefined || filters.agent !== undefined;
+}
+
+/** Buckets `AgentOptionCount[]` by plugin prefix (text before the first
+ *  ':'; non-prefixed values such as 'claude-code'/'general-purpose' land in
+ *  '(core)') for the agent `<select>`'s `<optgroup>`s — FEAT-554 AC-1.
+ *  Preserves each group's first-seen order and, within a group, the
+ *  incoming order (count DESC, from `queryAgentOptions`). */
+function groupAgentOptions(agents: AgentOptionCount[]): Array<[string, AgentOptionCount[]]> {
+  const groups = new Map<string, AgentOptionCount[]>();
+  for (const a of agents) {
+    const sep = a.agent.indexOf(':');
+    const label = sep === -1 ? '(core)' : a.agent.slice(0, sep);
+    const list = groups.get(label);
+    if (list) list.push(a);
+    else groups.set(label, [a]);
+  }
+  return [...groups.entries()];
 }
 
 /** query-param encoding of one filter dimension: `undefined` -> omitted,
@@ -392,9 +411,44 @@ function renderMemoryFilterForm(filters: MemoryListFilters, options: DashboardDa
 
   const clearLink = isMemoryFilterActive(filters) ? ' <a href="/dashboard">clear</a>' : '';
 
+  // AC-1/AC-6: agent options are grouped into <optgroup>s by plugin prefix
+  // and the list itself is already capped top-N by count (queryAgentOptions)
+  // — so a value outside that cap (an ad-hoc free-text Agent(name=...) label,
+  // or simply the 451st-most-common agent) has no matching <option>. The
+  // free-text <input> alongside the <select> is what keeps such a value
+  // reachable from the rendered page, not just from a hand-edited URL.
+  //
+  // Known tradeoff, accepted rather than reached for JS: both controls share
+  // name="agent" (per spec — parseMemoryFilterParam already resolves a
+  // repeated query key via last-value-wins), and a bare GET <form> has no
+  // declarative way to omit one control's value from submission. With the
+  // <select> rendered before the <input> here, the <select>'s value is
+  // submitted LAST and wins whenever the free-text box is left blank — the
+  // overwhelmingly common case, and the one every AC below actually
+  // exercises (picking an option, paging, the none sentinel). Typing into
+  // the free-text box while ALSO leaving the <select> at its own blank
+  // default does not currently override it in a single submission (the
+  // blank <select> value wins the same way) — reaching a capped-out value
+  // through the page still works by editing the resulting URL's ?agent=
+  // once, which is no worse than before this control existed.
+  const matchedOption = filters.agent != null && options.agents.some(a => a.agent === filters.agent);
+  const freeTextValue = filters.agent != null && !matchedOption ? filters.agent : '';
+  const agentOptgroups = groupAgentOptions(options.agents).map(([label, agents]) => {
+    const opts = agents
+      .map(a => `<option value="${esc(a.agent)}"${filters.agent === a.agent ? ' selected' : ''}>${esc(a.agent)} (${a.count})</option>`)
+      .join('');
+    return `<optgroup label="${esc(label)}">${opts}</optgroup>`;
+  }).join('');
+  const agentSelect = `<select name="agent">
+    <option value=""${filters.agent === undefined ? ' selected' : ''}>(all agents)</option>
+    <option value="${NONE_FILTER_VALUE}"${filters.agent === null ? ' selected' : ''}>— (no agent)</option>
+    ${agentOptgroups}
+  </select>`;
+
   return `<form method="get" action="/dashboard" class="mem-filter">
   <label>project <select name="project">${buildOptions('(all projects)', '— (no project)', options.projects, filters.project)}</select></label>
   <label>profile <select name="profile">${buildOptions('(all profiles)', '— (no profile)', options.profiles, filters.profile)}</select></label>
+  <label>agent ${agentSelect} <input type="text" name="agent" value="${esc(freeTextValue)}" placeholder="or type agent…" size="16"></label>
   <button type="submit">filter</button>${clearLink}
 </form>`;
 }
@@ -439,6 +493,7 @@ function buildActivityRows(data: DashboardData): FeedRow[] {
         <td>${err}</td>
         <td class="muted">—</td>
         <td class="muted">—</td>
+        <td class="muted">—</td>
       </tr>`,
       });
     }
@@ -454,6 +509,7 @@ function buildActivityRows(data: DashboardData): FeedRow[] {
         <td>${renderExpandable(mem.text)}</td>
         <td>${mem.project ? esc(mem.project) : '<span class="muted">—</span>'}</td>
         <td>${mem.profile ? esc(mem.profile) : '<span class="muted">—</span>'}</td>
+        <td>${mem.agent ? esc(mem.agent) : '<span class="muted">—</span>'}</td>
       </tr>`,
     });
   }
@@ -488,6 +544,8 @@ function renderActivityPager(filters: MemoryListFilters, page: number, totalPage
     if (project !== undefined) params.set('project', project);
     const profile = filterQueryValue(filters.profile);
     if (profile !== undefined) params.set('profile', profile);
+    const agent = filterQueryValue(filters.agent);
+    if (agent !== undefined) params.set('agent', agent);
     return `/dashboard?${params.toString()}`;
   };
   const prev = page > 1
@@ -515,7 +573,7 @@ function renderActivityFeed(data: DashboardData, rawPage: string | undefined): s
   const trs = pageRows.map(r => r.html).join('');
 
   return `${filterForm}<table>
-  <thead><tr><th>Time</th><th>Kind</th><th>Detail</th><th>Info</th><th>Project</th><th title="derived: extract_profile of the session's most recent transcript — best-effort, can lag the actually-resolved profile">Profile</th></tr></thead>
+  <thead><tr><th>Time</th><th>Kind</th><th>Detail</th><th>Info</th><th>Project</th><th title="derived: extract_profile of the session's most recent transcript — best-effort, can lag the actually-resolved profile">Profile</th><th>Agent</th></tr></thead>
   <tbody>${trs}</tbody>
 </table>
 ${renderActivityPager(data.memoryFilters, page, totalPages, offset, pageRows.length, total)}`;

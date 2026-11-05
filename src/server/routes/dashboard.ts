@@ -77,6 +77,7 @@ export function dashboardRoute(db: DB, config: Config, token: string, healthStat
       const memoryFilters: MemoryListFilters = {
         project: parseMemoryFilterParam(q['project']),
         profile: parseMemoryFilterParam(q['profile']),
+        agent: parseMemoryFilterParam(q['agent']),
       };
       const data = await queryDashboard(db, healthState, memoryFilters);
       const html = renderDashboard(data, config, rawPage);

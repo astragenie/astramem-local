@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { logger } from '../../../src/log/logger.js';
 import { openDb } from '../../../src/storage/db.js';
 import { migrate } from '../../../src/storage/migrate.js';
 import { MemoryRepo } from '../../../src/storage/memories.js';
@@ -14,6 +15,7 @@ import {
   queryRecentMemories,
   queryProjectOptions,
   queryProfileOptions,
+  queryAgentOptions,
   parseMemoryFilterParam,
 } from '../../../src/server/queries/dashboard.js';
 import type { DB } from '../../../src/storage/db.js';
@@ -219,10 +221,10 @@ describe('project + profile columns and filters (dashboard memory-listing surfac
     `).run(id, opts.session_id, opts.ingested_at ?? Date.now(), opts.extract_profile);
   }
 
-  function insertMemory(db: DB, opts: { project: string | null; session_id: string | null }): string {
+  function insertMemory(db: DB, opts: { project: string | null; session_id: string | null; agent?: string | null }): string {
     return new MemoryRepo(db).insert({
       type: 'fact', text: `memory for ${opts.project ?? 'no-project'}`, normalized_text: 'x',
-      repo: null, project: opts.project, branch: null, agent: null,
+      repo: null, project: opts.project, branch: null, agent: opts.agent ?? null,
       session_id: opts.session_id, hash: randomUUID(), source_hash: null,
     });
   }
@@ -322,6 +324,46 @@ describe('project + profile columns and filters (dashboard memory-listing surfac
     });
   });
 
+  // FEAT-554 AC-2: agent column/filter, same conditions-array pattern as
+  // project (:230-236 in queries/dashboard.ts).
+  describe('queryRecentMemories — agent column + filter', () => {
+    it('SELECTs the real memories.agent column with no extra query', () => {
+      insertMemory(db, { project: null, session_id: null, agent: 'crew:reviewer' });
+      const rows = queryRecentMemories(db);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.agent).toBe('crew:reviewer');
+    });
+
+    it('filters to an exact agent match', () => {
+      insertMemory(db, { project: null, session_id: null, agent: 'crew:reviewer' });
+      insertMemory(db, { project: null, session_id: null, agent: 'crew:fullstack-dev' });
+
+      const rows = queryRecentMemories(db, { agent: 'crew:reviewer' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.agent).toBe('crew:reviewer');
+    });
+
+    it('the null filter selection matches rows with agent IS NULL', () => {
+      insertMemory(db, { project: null, session_id: null, agent: null });
+      insertMemory(db, { project: null, session_id: null, agent: 'crew:reviewer' });
+
+      const rows = queryRecentMemories(db, { agent: null });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.agent).toBeNull();
+    });
+
+    it('AND-composes an agent filter with an active project filter', () => {
+      insertMemory(db, { project: 'repo-a', session_id: null, agent: 'crew:reviewer' });
+      insertMemory(db, { project: 'repo-a', session_id: null, agent: 'crew:fullstack-dev' });
+      insertMemory(db, { project: 'repo-b', session_id: null, agent: 'crew:reviewer' });
+
+      const rows = queryRecentMemories(db, { project: 'repo-a', agent: 'crew:reviewer' });
+      expect(rows.map(r => r.id)).toHaveLength(1);
+      expect(rows[0]!.project).toBe('repo-a');
+      expect(rows[0]!.agent).toBe('crew:reviewer');
+    });
+  });
+
   describe('queryProjectOptions / queryProfileOptions', () => {
     it('returns distinct non-null project values, sorted', () => {
       insertMemory(db, { project: 'repo-b', session_id: null });
@@ -341,6 +383,54 @@ describe('project + profile columns and filters (dashboard memory-listing surfac
       insertTranscript(db, { session_id: 's3', extract_profile: null });
 
       expect(queryProfileOptions(db)).toEqual(['conversational', 'engineering']);
+    });
+  });
+
+  // FEAT-554 AC-6/AC-7: top-N-by-count (not plain DISTINCT) + structured
+  // timing log.
+  describe('queryAgentOptions', () => {
+    it('returns distinct non-null agent values ordered by memory count DESC', () => {
+      insertMemory(db, { project: null, session_id: null, agent: 'crew:reviewer' });
+      insertMemory(db, { project: null, session_id: null, agent: 'crew:reviewer' });
+      insertMemory(db, { project: null, session_id: null, agent: 'crew:reviewer' });
+      insertMemory(db, { project: null, session_id: null, agent: 'runner:pm' });
+      insertMemory(db, { project: null, session_id: null, agent: 'runner:pm' });
+      insertMemory(db, { project: null, session_id: null, agent: 'claude-code' });
+      insertMemory(db, { project: null, session_id: null, agent: null });
+
+      expect(queryAgentOptions(db)).toEqual([
+        { agent: 'crew:reviewer', count: 3 },
+        { agent: 'runner:pm', count: 2 },
+        { agent: 'claude-code', count: 1 },
+      ]);
+    });
+
+    it('AC-6: bounded by an explicit LIMIT — a capped-out agent is absent from the top-N result', () => {
+      for (let i = 0; i < 5; i++) {
+        insertMemory(db, { project: null, session_id: null, agent: `agent-${i}` });
+      }
+      const rows = queryAgentOptions(db, 3);
+      expect(rows).toHaveLength(3);
+      // every value fed in was a real agent — LIMIT truncated the result,
+      // it never silently fabricated or deduped past what's there.
+      expect(rows.every(r => r.agent.startsWith('agent-'))).toBe(true);
+    });
+
+    it('AC-7: emits row count + elapsed ms on a structured logger.info call', () => {
+      const infoSpy = vi.spyOn(logger, 'info').mockImplementation((() => {}) as never);
+      insertMemory(db, { project: null, session_id: null, agent: 'crew:reviewer' });
+
+      queryAgentOptions(db);
+
+      expect(infoSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'dashboard.query.agent_options',
+          rowCount: 1,
+          elapsedMs: expect.any(Number),
+        }),
+        expect.any(String),
+      );
+      infoSpy.mockRestore();
     });
   });
 
@@ -386,6 +476,16 @@ describe('project + profile columns and filters (dashboard memory-listing surfac
       const data = await queryDashboard(db);
       expect(data.memoryFilters).toEqual({});
       expect(data.filterOptions.projects).toContain('repo-a');
+    });
+
+    it('FEAT-554: applies an agent filter and echoes it back on memoryFilters; filterOptions.agents is populated', async () => {
+      insertMemory(db, { project: null, session_id: null, agent: 'crew:reviewer' });
+      insertMemory(db, { project: null, session_id: null, agent: 'runner:pm' });
+
+      const data = await queryDashboard(db, undefined, { agent: 'crew:reviewer' });
+      expect(data.recentMemories.every(m => m.agent === 'crew:reviewer')).toBe(true);
+      expect(data.memoryFilters).toEqual({ agent: 'crew:reviewer' });
+      expect(data.filterOptions.agents.map(a => a.agent)).toContain('runner:pm');
     });
   });
 });

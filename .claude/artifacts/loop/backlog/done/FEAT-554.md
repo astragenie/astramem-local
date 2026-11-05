@@ -1,11 +1,12 @@
 ---
 id: FEAT-554
-status: in-progress
+status: done
 priority: P2
 category: feature
 target_release: null
 created: 2026-11-05
 updated: 2026-11-05
+completed_at: 2026-11-05
 depends_on: []
 slices: [SLICE-448]
 derived_from: null

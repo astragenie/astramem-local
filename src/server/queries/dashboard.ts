@@ -8,6 +8,7 @@ import type { DB } from '../../storage/db.js';
 import { usefulnessRate, type UsefulnessRate } from '../../storage/usefulness.js';
 import { ProposalRepo } from '../../consolidate/proposals.js';
 import type { HealthState } from '../health-state.js';
+import { logger } from '../../log/logger.js';
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -34,6 +35,11 @@ export interface RecentMemory {
    *  transcript row exists for that session, or the envelope never set
    *  extract_profile. */
   profile: string | null;
+  /** `memories.agent` — the SubagentStop hook's `agent_type`, e.g.
+   *  'crew:reviewer', 'claude-code', or an ad-hoc free-text label like
+   *  'reviewer-420'. `null` when the hook never populated it (pre-FEAT-423
+   *  rows, or a capture path that bypasses the hook). */
+  agent: string | null;
 }
 
 export interface JobStateCount {
@@ -125,20 +131,25 @@ export interface DashboardData {
   /** Distinct values available to filter on, for populating the `<select>`
    *  dropdowns — independent of `recentMemories`' own LIMIT 25 window so an
    *  option doesn't disappear just because its rows fell off the recent
-   *  window. */
-  filterOptions: { projects: string[]; profiles: string[] };
+   *  window. `agents` is additionally capped to the top-N by memory count
+   *  (`queryAgentOptions`'s `limit`) — see its doc comment; the free-text
+   *  `<input name="agent">` fallback in dashboard-html.ts is what keeps a
+   *  capped-out agent reachable. */
+  filterOptions: { projects: string[]; profiles: string[]; agents: AgentOptionCount[] };
 }
 
 /**
- * project/profile filter state for the recent-memories listing.
+ * project/profile/agent filter state for the recent-memories listing.
  * `undefined` = no filter on that dimension (matches everything).
  * `null` = the '—'/"none" filter option — match rows where the value is
- * NULL/undeterminable (no `memories.project`, or no derivable profile).
+ * NULL/undeterminable (no `memories.project`, no derivable profile, or no
+ * `memories.agent`).
  * A `string` = exact match on that value.
  */
 export interface MemoryListFilters {
   project?: string | null;
   profile?: string | null;
+  agent?: string | null;
 }
 
 /** Query-param sentinel for "match NULL/undeterminable rows" — the '—'
@@ -253,9 +264,18 @@ export function queryRecentMemories(db: DB, filters: MemoryListFilters = {}): Re
     }
   }
 
+  if (filters.agent !== undefined) {
+    if (filters.agent === null) {
+      conditions.push('agent IS NULL');
+    } else {
+      conditions.push('agent = ?');
+      params.push(filters.agent);
+    }
+  }
+
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = db.prepare(`
-    SELECT id, type, text, importance, confidence, session_id, created_at, project
+    SELECT id, type, text, importance, confidence, session_id, created_at, project, agent
     FROM memories
     ${whereClause}
     ORDER BY created_at DESC
@@ -287,6 +307,55 @@ export function queryProfileOptions(db: DB): string[] {
     'SELECT DISTINCT extract_profile FROM transcripts WHERE extract_profile IS NOT NULL ORDER BY extract_profile',
   ).all() as Array<{ extract_profile: string }>;
   return rows.map(r => r.extract_profile);
+}
+
+/** One `memories.agent` value + how many memories carry it, for populating
+ *  the agent filter `<select>` (grouped into `<optgroup>`s by plugin prefix
+ *  client-side — see dashboard-html.ts's renderMemoryFilterForm). */
+export interface AgentOptionCount {
+  agent: string;
+  count: number;
+}
+
+const AGENT_OPTIONS_DEFAULT_LIMIT = 50;
+
+/** FEAT-554 AC-6: top-N `memories.agent` values by memory count, NOT a
+ *  plain `SELECT DISTINCT` — a real store carries ~450 distinct agent
+ *  values (450 `<option>`s would be an unusable dropdown, and includes
+ *  free-text ad-hoc labels like `reviewer-420`), so this caps to the
+ *  busiest N and leaves the rest reachable only through the free-text
+ *  `<input name="agent">` fallback dashboard-html.ts renders alongside the
+ *  `<select>`. `GROUP BY agent` here rides `idx_memories_agent`
+ *  (migrations/019-health-agent-profile-indexes.sql: `(agent, valid_to,
+ *  archived, type, created_at DESC)`) as an index-only scan keyed on its
+ *  leading `agent` column — never a full `memories` table scan — so this
+ *  stays bounded at ~120k-row scale. */
+export function queryAgentOptions(db: DB, limit = AGENT_OPTIONS_DEFAULT_LIMIT): AgentOptionCount[] {
+  const start = performance.now();
+  const rows = db.prepare(`
+    SELECT agent, COUNT(*) AS count
+    FROM memories
+    WHERE agent IS NOT NULL
+    GROUP BY agent
+    ORDER BY count DESC
+    LIMIT ?
+  `).all(limit) as AgentOptionCount[];
+
+  // AC-7: row count + elapsed ms on a structured path, so a cost regression
+  // in this query (e.g. the distinct-agent cardinality growing well past
+  // the ~450 observed on 2026-11-05) is visible from logs without
+  // profiling. There is no pre-existing per-query timing path for
+  // queryProjectOptions/queryProfileOptions to mirror (verified: neither
+  // emits one today) — this is a new, narrowly-scoped structured log for
+  // the agent-options query specifically, not a retrofit of the other two
+  // (retrofitting them is out of this slice's scope: "any change to
+  // project/profile semantics").
+  logger.info(
+    { event: 'dashboard.query.agent_options', rowCount: rows.length, elapsedMs: performance.now() - start },
+    'dashboard: agent options query',
+  );
+
+  return rows;
 }
 
 export function queryJobStates(db: DB): JobStateCount[] {
@@ -438,7 +507,7 @@ export async function queryDashboard(db: DB, healthState?: HealthState, memoryFi
   const recentFailedJobs = queryRecentFailedJobs(db);
   const entityLinkage = queryEntityLinkage(db);
   const health = healthState ? buildDashboardHealth(healthState) : null;
-  const filterOptions = { projects: queryProjectOptions(db), profiles: queryProfileOptions(db) };
+  const filterOptions = { projects: queryProjectOptions(db), profiles: queryProfileOptions(db), agents: queryAgentOptions(db) };
 
   return {
     memoryCounts,
