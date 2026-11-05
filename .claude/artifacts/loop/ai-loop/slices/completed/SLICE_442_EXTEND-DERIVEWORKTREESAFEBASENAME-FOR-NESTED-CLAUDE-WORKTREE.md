@@ -1,7 +1,7 @@
 ---
 id: SLICE-442
 title: Extend deriveWorktreeSafeBasename for nested .claude/worktrees/<x> + contract tests
-status: pending
+status: completed
 feature: FEAT-553
 phase: null
 priority: P1
@@ -12,13 +12,12 @@ created: 2026-11-05
 updated: 2026-11-05
 effort_points: 2
 estimated_tokens: 100000
-touches_files:
-  - src/pipeline/cwd-basename.ts
-  - tests/pipeline/cwd-basename.test.ts
+touches_files: [src/pipeline/cwd-basename.ts, tests/pipeline/cwd-basename.test.ts]
 wave: 1
 depends_on: []
 wave_attempts: 0
 pending_fix: false
+completed_at: 2026-11-05
 ---
 # SLICE-442: Extend deriveWorktreeSafeBasename for nested .claude/worktrees/<x> + contract tests
 
