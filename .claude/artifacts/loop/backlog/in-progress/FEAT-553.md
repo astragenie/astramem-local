@@ -48,6 +48,7 @@ tags: [storage, api-change, workflow, test, docs]
 needs_contract: false
 needs_ux: false
 started_at: 2026-11-05
+slices_complete: [SLICE-443]
 ---
 ## Description
 

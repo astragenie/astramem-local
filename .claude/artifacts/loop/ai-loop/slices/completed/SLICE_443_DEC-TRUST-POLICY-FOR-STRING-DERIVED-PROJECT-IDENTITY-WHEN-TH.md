@@ -1,7 +1,7 @@
 ---
 id: SLICE-443
 title: "DEC: trust policy for string-derived project identity when the worktree is deleted"
-status: pending
+status: completed
 feature: FEAT-553
 phase: null
 priority: P1
@@ -12,13 +12,12 @@ created: 2026-11-05
 updated: 2026-11-05
 effort_points: 2
 estimated_tokens: 100000
-touches_files:
-  - .claude/artifacts/loop/decisions/DEC-017.md
-  - .claude/artifacts/loop/decisions/README.md
+touches_files: [.claude/artifacts/loop/decisions/DEC-017.md, .claude/artifacts/loop/decisions/README.md]
 wave: 1
 depends_on: []
 wave_attempts: 0
 pending_fix: false
+completed_at: 2026-11-05
 ---
 # SLICE-443: DEC: trust policy for string-derived project identity when the worktree is deleted
 
@@ -43,7 +42,7 @@ Fix provenance leak: Claude Code agent-worktree directory names (agent-<id>) sto
 
 ## Acceptance criteria
 
-- [ ] AC-S1: Given this slice's In-scope deliverable, When the reviewer reads it, Then every item listed under In scope exists as described and nothing under Out of scope was touched.
+- [x] AC-S1: Given this slice's In-scope deliverable, When the reviewer reads it, Then every item listed under In scope exists as described and nothing under Out of scope was touched. Evidence: `.claude/artifacts/crew/reviews/feat553-slice443-dec017-review.md` (PASS), `.claude/artifacts/crew/validations/20261105T225200Z-validation-result-feat553-slice443-dec017.md` (pass).
 
 ## Done When
 
