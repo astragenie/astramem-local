@@ -9,7 +9,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { defaultDataDir } from '../config/datadir.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
@@ -46,7 +46,7 @@ function loadState(path: string): CaptureState {
 }
 
 /**
- * `astramem-local capture claude <transcript-path> [--event subagent_stop|
+ * `astramem-local capture claude <transcript-path> [--agent-type <name>] [--event subagent_stop|
  * session_end] [--json]` (FEAT-449). Reads the Claude Code `.jsonl`
  * transcript AT INVOCATION — the hook calls this synchronously at
  * agent/session close, while the file is still guaranteed live — and writes
@@ -66,6 +66,10 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
   const asJson = args.includes('--json');
   const eventArg = parseArg(args, '--event');
   const event: ClaudeCaptureEvent = eventArg === 'session_end' ? 'session_end' : 'subagent_stop';
+  // astramem-local#375: the astramem-plugin SubagentStop hook forwards the
+  // payload's agent_type (e.g. "devcrew:reviewer") so the capture is
+  // attributed to the producing subagent, not the parent "claude-code".
+  const agentTypeArg = parseArg(args, '--agent-type');
   // FEAT-455 / ADR-012 decision 1: the (future, plugin-repo, out of scope for
   // this slice) denser-sampling trigger calls this CLI with --auto-capture.
   // The astramem-plugin close-capture hook is the ONLY caller today, and it
@@ -153,7 +157,10 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
   }
 
   const dataDir = process.env.ASTRA_MEMORY_DATADIR ?? defaultDataDir();
-  const envelope = buildClaudeEnvelope(parsed, event, PKG_VERSION, undefined, captureSource);
+  const envelope = buildClaudeEnvelope(parsed, event, PKG_VERSION, undefined, captureSource, {
+    agentType: agentTypeArg,
+    transcriptId: basename(transcriptPath, '.jsonl'),
+  });
   const key = claudeIdempotencyKey(envelope);
   const spooledPath = writeToSpool(dataDir, key, envelope, cfg);
 
