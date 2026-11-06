@@ -62,6 +62,12 @@
  *    `deriveWorktreeSafeBasename` itself would still return *something*
  *    (its own conservative last-segment passthrough) — that passthrough is
  *    never trusted as a resolution here.
+ *  - AC-9 / DEC-017 rule 3: each candidate carries `source`
+ *    (`'git-common-dir' | 'string-heuristic' | null`) naming which
+ *    resolution path (if any) produced `resolvedValue`, and `cwdBasename`
+ *    (never the raw `cwd`) as a redacted stand-in for the session's
+ *    working directory — this module never hands the absolute cwd path to
+ *    any caller, including CLI `--json` output.
  */
 import type { DB } from '../storage/db.js';
 import { resolveRepoIdentity } from './repo-identity.js';
@@ -116,17 +122,36 @@ export interface RepoIdentityBackfillOptions {
 
 export type RepoIdentityBackfillReason = 'no-session' | 'no-cwd' | 'unresolved';
 
+/** Provenance of `resolvedValue` (DEC-017 rule 3): which resolution path
+ *  produced it — `'git-common-dir'` when `resolveRepoIdentity` answered,
+ *  `'string-heuristic'` when the trust-gated `deriveWorktreeSafeBasename`
+ *  fallback answered instead, or `null` when neither did (resolvedValue is
+ *  also null in that case). Surfaced so a reviewer can see, per row,
+ *  whether a re-stamp came from git truth or from the narrower string
+ *  fallback DEC-017 trusts only for the two tool-generated worktree
+ *  layouts. */
+export type RepoIdentityBackfillSource = 'git-common-dir' | 'string-heuristic' | null;
+
 export interface RepoIdentityBackfillCandidate {
   memoryId: string;
   sessionId: string | null;
   /** The column's current (bad-shape) value on the memories row. */
   currentValue: string;
-  cwd: string | null;
+  /** Redacted stand-in for the session's cwd (AC-9: the raw absolute path
+   *  is NEVER carried out of this module). Resolves to, in order: the
+   *  resolved repo-root basename (`resolvedValue`) when resolution
+   *  succeeded; else the cwd's own last path segment (still just a
+   *  basename — never a parent directory or the home dir) when a cwd was
+   *  recorded but couldn't be resolved; else null when there was no cwd at
+   *  all. */
+  cwdBasename: string | null;
   /** The resolved replacement value, or null when unresolved. Always a
    *  repo-root BASENAME, never an absolute path (AC-9) — both resolution
    *  paths (`resolveRepoIdentity`, `deriveWorktreeSafeBasename`) already
    *  return basenames by construction. */
   resolvedValue: string | null;
+  /** Which resolution path produced resolvedValue (DEC-017 rule 3). */
+  source: RepoIdentityBackfillSource;
   /** Count of OTHER memories already stamped with resolvedValue — the
    *  consolidation-grouping blast radius of this re-stamp. 0 when
    *  resolvedValue is null (nothing applied). */
@@ -197,16 +222,42 @@ function isTrustedWorktreeCwdShape(cwd: string): boolean {
   return false;
 }
 
+interface ResolvedColumnIdentity {
+  value: string;
+  source: 'git-common-dir' | 'string-heuristic';
+}
+
 /**
  * The DEC-017 resolver: git identity first, then a trust-gated string
  * fallback. Returns null (never guesses) when git can't answer AND cwd
  * doesn't structurally match one of the two trusted worktree layouts.
+ * The returned `source` is DEC-017 rule 3's observability field: callers
+ * must be able to tell git-resolved rows from string-heuristic ones.
  */
-function resolveColumnIdentity(cwd: string): string | null {
+function resolveColumnIdentity(cwd: string): ResolvedColumnIdentity | null {
   const gitResolved = resolveRepoIdentity(cwd);
-  if (gitResolved) return gitResolved;
+  if (gitResolved) return { value: gitResolved, source: 'git-common-dir' };
   if (!isTrustedWorktreeCwdShape(cwd)) return null;
-  return deriveWorktreeSafeBasename(cwd);
+  const stringResolved = deriveWorktreeSafeBasename(cwd);
+  if (!stringResolved) return null;
+  return { value: stringResolved, source: 'string-heuristic' };
+}
+
+/**
+ * AC-9 redaction: the candidate record must never carry the session's raw
+ * absolute cwd out of this module. Prefers the resolved repo-root basename
+ * (already a basename by construction); when nothing resolved but a cwd
+ * was recorded, falls back to that cwd's own LAST PATH SEGMENT only — the
+ * worktree directory name, never a parent segment or the home directory;
+ * returns null when there was no cwd at all.
+ */
+function redactCwd(cwd: string | null, resolvedValue: string | null): string | null {
+  if (resolvedValue) return resolvedValue;
+  if (!cwd) return null;
+  const trimmed = cwd.replace(/[\\/]+$/, '');
+  if (!trimmed) return null;
+  const segments = trimmed.split(/[\\/]/).filter(Boolean);
+  return segments.length > 0 ? segments[segments.length - 1]! : null;
 }
 
 export function runRepoIdentityBackfill(
@@ -256,8 +307,9 @@ export function runRepoIdentityBackfill(
 
     if (!row.session_id) {
       candidates.push({
-        memoryId: row.id, sessionId: null, currentValue: row.value, cwd: null,
-        resolvedValue: null, joiningExistingCount: 0, applied: false, reason: 'no-session',
+        memoryId: row.id, sessionId: null, currentValue: row.value, cwdBasename: null,
+        resolvedValue: null, source: null, joiningExistingCount: 0, applied: false,
+        reason: 'no-session',
       });
       unresolved++;
       continue;
@@ -267,36 +319,41 @@ export function runRepoIdentityBackfill(
     const cwd = session?.cwd ?? null;
     if (!cwd) {
       candidates.push({
-        memoryId: row.id, sessionId: row.session_id, currentValue: row.value, cwd: null,
-        resolvedValue: null, joiningExistingCount: 0, applied: false, reason: 'no-cwd',
+        memoryId: row.id, sessionId: row.session_id, currentValue: row.value, cwdBasename: null,
+        resolvedValue: null, source: null, joiningExistingCount: 0, applied: false,
+        reason: 'no-cwd',
       });
       unresolved++;
       continue;
     }
 
     const resolved = resolveColumnIdentity(cwd);
-    if (!resolved || resolved === row.value) {
+    const resolvedValue = resolved?.value ?? null;
+    const source = resolved?.source ?? null;
+    if (!resolvedValue || resolvedValue === row.value) {
       candidates.push({
-        memoryId: row.id, sessionId: row.session_id, currentValue: row.value, cwd,
-        resolvedValue: resolved, joiningExistingCount: 0, applied: false, reason: 'unresolved',
+        memoryId: row.id, sessionId: row.session_id, currentValue: row.value,
+        cwdBasename: redactCwd(cwd, resolvedValue),
+        resolvedValue, source, joiningExistingCount: 0, applied: false, reason: 'unresolved',
       });
       unresolved++;
       continue;
     }
 
-    const joiningExistingCount = (countStmt.get(resolved) as { n: number }).n;
+    const joiningExistingCount = (countStmt.get(resolvedValue) as { n: number }).n;
 
     if (!opts.dryRun) {
-      updateStmt.run(resolved, Date.now(), row.id);
+      updateStmt.run(resolvedValue, Date.now(), row.id);
     }
     applied++;
     candidates.push({
-      memoryId: row.id, sessionId: row.session_id, currentValue: row.value, cwd,
-      resolvedValue: resolved, joiningExistingCount, applied: !opts.dryRun,
+      memoryId: row.id, sessionId: row.session_id, currentValue: row.value,
+      cwdBasename: redactCwd(cwd, resolvedValue),
+      resolvedValue, source, joiningExistingCount, applied: !opts.dryRun,
     });
 
-    if (includeSessions && session && session.value !== resolved) {
-      sessionsToRestamp.set(row.session_id, resolved);
+    if (includeSessions && session && session.value !== resolvedValue) {
+      sessionsToRestamp.set(row.session_id, resolvedValue);
     }
   }
 

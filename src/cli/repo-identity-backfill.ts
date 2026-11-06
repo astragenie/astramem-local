@@ -30,12 +30,21 @@
  * migration that changes consolidation grouping keys must never run
  * unattended by accident. `--yes` is required to actually mutate rows.
  *
- * AC-9 posture: this command never prints a raw filesystem path. Every
- * value shown (current or resolved) is a repo-root BASENAME by
- * construction of the core resolver — `candidate.cwd` (the full path) is
- * part of the returned data shape for callers that need it (tests, `--json`
- * consumers performing their own redaction) but is never written to the
- * human-readable console output here.
+ * AC-9 posture: this command never prints a raw filesystem path, in EITHER
+ * the human preview or `--json`. The core resolver (src/tag-hygiene/
+ * repo-identity-backfill.ts) never carries the session's absolute cwd out
+ * of the module at all — the candidate record only ever exposes
+ * `cwdBasename` (a redacted basename: the resolved repo-root name, or the
+ * cwd's own last path segment when unresolved, or null), never the raw
+ * `cwd` string. `--json` prints the WHOLE result object verbatim (no
+ * separate redaction step needed here — there is nothing left to redact).
+ *
+ * DEC-017 rule 3 posture: each candidate also carries `source`
+ * (`'git-common-dir' | 'string-heuristic' | null`), surfaced both in the
+ * human preview (`[source: ...]` on each proposed-change line) and in
+ * `--json` — so a reviewer can tell a git-resolved re-stamp apart from the
+ * narrower string-heuristic fallback DEC-017 trusts only for the two
+ * tool-generated worktree layouts.
  */
 
 import { openRuntimeDb } from './open-runtime-db.js';
@@ -66,7 +75,7 @@ function printResult(result: RepoIdentityBackfillResult): void {
       const merge = c.joiningExistingCount > 0
         ? ` (joins ${c.joiningExistingCount} existing '${c.resolvedValue}' memories)`
         : '';
-      console.log(`    ${c.memoryId}: ${result.column} ${c.currentValue} -> ${c.resolvedValue}${merge}`);
+      console.log(`    ${c.memoryId}: ${result.column} ${c.currentValue} -> ${c.resolvedValue} [source: ${c.source}]${merge}`);
     }
     const unresolvedRows = result.candidates.filter(c => c.reason);
     if (unresolvedRows.length > 0) {

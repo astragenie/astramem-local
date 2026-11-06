@@ -16,7 +16,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { openDb } from '../../src/storage/db.js';
@@ -344,6 +344,92 @@ describe('runRepoIdentityBackfill — AC-4: no-session / no-cwd / unresolved nev
       expect(getMemoryColumn(db, memId, 'repo')).toBe('agent-deadbeef12345');
     },
   );
+});
+
+describe('runRepoIdentityBackfill — AC-9 / DEC-017 rule 3: cwdBasename + source are observable and never leak the raw cwd', () => {
+  it(
+    'git-resolved candidate (real worktree): source is \'git-common-dir\' and cwdBasename equals ' +
+    'the resolved repo-root basename, never the raw absolute cwd',
+    () => {
+      const db = setupDb();
+      const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-cafe0000bead1');
+      const sessionId = randomUUID();
+      insertSession(db, sessionId, { repo: 'agent-cafe0000bead1', cwd: worktreeDir });
+      const memId = insertMemory(db, { session_id: sessionId, repo: 'agent-cafe0000bead1' });
+
+      const result = runRepoIdentityBackfill(db, { dryRun: true });
+      const candidate = result.candidates.find(c => c.memoryId === memId)!;
+
+      expect(candidate.resolvedValue).toBe('astramemory-local');
+      expect(candidate.source).toBe('git-common-dir');
+      expect(candidate.cwdBasename).toBe('astramemory-local');
+      // The raw absolute path never appears anywhere on the candidate.
+      expect(candidate).not.toHaveProperty('cwd');
+      expect(JSON.stringify(candidate)).not.toContain(worktreeDir);
+    },
+  );
+
+  it(
+    'string-heuristic candidate (deleted worktree, trusted shape): source is \'string-heuristic\' ' +
+    'and cwdBasename equals the string-derived repo-root basename, never the raw absolute cwd',
+    () => {
+      const db = setupDb();
+      const sessionId = randomUUID();
+      const deletedCwd = 'C:\\work\\mega\\astramemory-local\\.claude\\worktrees\\agent-dead0000beef2';
+      insertSession(db, sessionId, { repo: 'agent-dead0000beef2', cwd: deletedCwd });
+      const memId = insertMemory(db, { session_id: sessionId, repo: 'agent-dead0000beef2' });
+
+      const result = runRepoIdentityBackfill(db, { dryRun: true });
+      const candidate = result.candidates.find(c => c.memoryId === memId)!;
+
+      expect(candidate.resolvedValue).toBe('astramemory-local');
+      expect(candidate.source).toBe('string-heuristic');
+      expect(candidate.cwdBasename).toBe('astramemory-local');
+      expect(candidate).not.toHaveProperty('cwd');
+      expect(JSON.stringify(candidate)).not.toContain(deletedCwd);
+    },
+  );
+
+  it(
+    'genuinely unresolved candidate (no trusted shape): source is null, and cwdBasename falls back ' +
+    'to the raw cwd\'s own last path segment — never a parent segment, never the absolute path',
+    () => {
+      const db = setupDb();
+      const sessionId = randomUUID();
+      const untrustedCwd = 'C:\\work\\mega\\some-random-scratch-dir\\agent-face0000feed3';
+      insertSession(db, sessionId, { repo: 'agent-face0000feed3', cwd: untrustedCwd });
+      const memId = insertMemory(db, { session_id: sessionId, repo: 'agent-face0000feed3' });
+
+      const result = runRepoIdentityBackfill(db, { dryRun: true });
+      const candidate = result.candidates.find(c => c.memoryId === memId)!;
+
+      expect(candidate.resolvedValue).toBeNull();
+      expect(candidate.source).toBeNull();
+      expect(candidate.cwdBasename).toBe('agent-face0000feed3');
+      expect(candidate).not.toHaveProperty('cwd');
+      expect(JSON.stringify(candidate)).not.toContain(untrustedCwd);
+      expect(JSON.stringify(candidate)).not.toContain('some-random-scratch-dir');
+    },
+  );
+
+  it('no-session / no-cwd candidates: source is null and cwdBasename is null (nothing to redact)', () => {
+    const db = setupDb();
+    const noSessionMemId = insertMemory(db, { session_id: null, repo: 'agent-cafe0000face4' });
+
+    const sessionId = randomUUID();
+    insertSession(db, sessionId, { repo: 'agent-dead0000face5', cwd: null });
+    const noCwdMemId = insertMemory(db, { session_id: sessionId, repo: 'agent-dead0000face5' });
+
+    const result = runRepoIdentityBackfill(db, { dryRun: true });
+
+    const noSessionCandidate = result.candidates.find(c => c.memoryId === noSessionMemId)!;
+    expect(noSessionCandidate.source).toBeNull();
+    expect(noSessionCandidate.cwdBasename).toBeNull();
+
+    const noCwdCandidate = result.candidates.find(c => c.memoryId === noCwdMemId)!;
+    expect(noCwdCandidate.source).toBeNull();
+    expect(noCwdCandidate.cwdBasename).toBeNull();
+  });
 });
 
 describe('runRepoIdentityBackfill — project column (FEAT-553)', () => {
@@ -880,4 +966,52 @@ describe('repoIdentityBackfillCommand — CLI layer (FEAT-553 argv wiring: --col
     expect(printed).not.toContain(worktreeDir);
     expect(printed).toContain('astramemory-local');
   });
+
+  it(
+    'AC-9 DEFECT FIX: --json output never prints the raw session cwd — neither the temp-dir ' +
+    'path the fixture lives under nor the real OS home directory — only the redacted ' +
+    'cwdBasename/source fields, while still reporting the resolved basename',
+    () => {
+      const dir = mkTmpDir('repoidbackfill-cli-json-');
+      process.env.ASTRA_MEMORY_DATADIR = dir;
+      // Session cwd lives under a temp dir, nested .claude/worktrees/<x> —
+      // the exact tool-generated shape this backfill resolves via git.
+      const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-cafe0000feed6');
+      let memId = '';
+      seedFileDb(dir, (db) => {
+        const sessionId = randomUUID();
+        insertSession(db, sessionId, { repo: 'agent-cafe0000feed6', cwd: worktreeDir });
+        memId = insertMemory(db, { session_id: sessionId, repo: 'agent-cafe0000feed6' });
+      });
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      repoIdentityBackfillCommand(['--json']);
+
+      // --json prints exactly one JSON blob (the whole result object).
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      const printed = logSpy.mock.calls[0]![0] as string;
+
+      // Neither the fixture's own absolute worktree path, the temp-dir root
+      // it (and the datadir) live under, nor the real OS home directory
+      // ever appears in the printed JSON (AC-9 — home-dir-revealing paths
+      // must never be printed).
+      expect(printed).not.toContain(worktreeDir);
+      expect(printed).not.toContain(tmpdir());
+      expect(printed).not.toContain(homedir());
+      // The resolved repo-root basename IS present — redaction must stay
+      // useful, not black-box the one piece of information the command
+      // exists to report.
+      expect(printed).toContain('astramemory-local');
+
+      const parsed = JSON.parse(printed) as {
+        applied: number;
+        candidates: Array<Record<string, unknown>>;
+      };
+      expect(parsed.applied).toBe(1);
+      const candidate = parsed.candidates.find(c => c.memoryId === memId)!;
+      expect(candidate).not.toHaveProperty('cwd');
+      expect(candidate.cwdBasename).toBe('astramemory-local');
+      expect(candidate.source).toBe('git-common-dir');
+    },
+  );
 });
