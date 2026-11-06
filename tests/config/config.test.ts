@@ -42,21 +42,25 @@ describe('loadConfig', () => {
 
   // A shipped default with no assertion is how it silently drifts.
   // 2026-07-14 (v0.18.0): both compaction and extraction moved off
-  // ollama/qwen3.5:4b to codex-subscription/gpt-5.4-mini — every local-ollama
-  // qwen default has broken at least one shipped install (empty output under
+  // ollama/qwen3.5:4b to codex-subscription — every local-ollama qwen
+  // default has broken at least one shipped install (empty output under
   // thinking mode, VRAM spill; see "qwen3:8b breaks distill extract" /
   // "Ollama 8GB VRAM ceiling" in CLAUDE.md). codex-subscription runs off-box
   // against the operator's own ChatGPT plan and requires `codex login`.
+  // The model itself was originally gpt-5.4-mini; OpenAI retired that slug
+  // from ChatGPT-account Codex (~Sept 2026), so the shipped model is now
+  // gpt-6-luna (2026-11-05 catalog's cheap tier — see
+  // src/providers/llm/codex-subscription.ts DEFAULT_MODEL).
   // Embedding default flipped to in-process ONNX (ADR-018, 2026-07-15): same
   // mxbai-embed-large model, 0.989 cosine parity with Ollama-mxbai, no Ollama
   // process required. Model name is unchanged (registry key); only the runtime
   // provider changed.
-  it('llm.compaction/extraction default to codex-subscription/gpt-5.4-mini', () => {
+  it('llm.compaction/extraction default to codex-subscription/gpt-6-luna', () => {
     const cfg = defaultConfig();
     expect(cfg.llm.compaction.provider).toBe('codex-subscription');
-    expect(cfg.llm.compaction.model).toBe('gpt-5.4-mini');
+    expect(cfg.llm.compaction.model).toBe('gpt-6-luna');
     expect(cfg.llm.extraction.provider).toBe('codex-subscription');
-    expect(cfg.llm.extraction.model).toBe('gpt-5.4-mini');
+    expect(cfg.llm.extraction.model).toBe('gpt-6-luna');
     expect(cfg.embedding.provider).toBe('onnx');
     expect(cfg.embedding.model).toBe('mxbai-embed-large');
   });

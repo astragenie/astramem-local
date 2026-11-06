@@ -51,8 +51,8 @@ describe('astramem-local config upgrade-model (issue #279)', () => {
 
   it('returns an empty plan for a non-ollama provider regardless of model name', async () => {
     const plan = await planModelUpgrade({
-      compaction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' },
-      extraction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' },
+      compaction: { provider: 'codex-subscription', model: 'gpt-6-luna' },
+      extraction: { provider: 'codex-subscription', model: 'gpt-6-luna' },
     });
     expect(plan.edits).toEqual([]);
   });

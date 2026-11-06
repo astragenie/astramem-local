@@ -223,9 +223,11 @@ describe('config defaults vs docs consistency (FEAT-483 SLICE-6)', () => {
     },
     {
       configPath: 'llm.compaction.model',
-      documentedDefault: 'gpt-5.4-mini',
+      documentedDefault: 'gpt-6-luna',
       actualDefault: cfg.llm.compaction.model,
-      docSource: 'config.ts ~1418 doc comment, same paragraph — codex-subscription DEFAULT_MODEL cheap tier.',
+      docSource:
+        'config.ts ~1418 doc comment, same paragraph — codex-subscription DEFAULT_MODEL cheap tier ' +
+        '(2026-11-05 catalog; gpt-5.4-mini retired by OpenAI ~Sept 2026).',
     },
 
     // --- num_ctx sizing (CLAUDE.md "LLM sampling: num_ctx and temperature") ---

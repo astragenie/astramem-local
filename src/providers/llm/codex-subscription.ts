@@ -45,15 +45,39 @@ const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 
 /**
  * Default model for the codex-subscription tier — the cheapest/lightest
- * model in the catalog. Live-verified (2026-07-08) against a real
- * `~/.codex/models_cache.json` (Codex CLI 0.142.2): the full catalog was
- * exactly `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `codex-auto-review` — the
- * `-mini` suffix and lack of speed/service tiers make `gpt-5.4-mini` the
- * clear cheap-tier pick. OpenAI's model naming moves fast; verify against
- * your own `~/.codex/models_cache.json` and override via
- * config.llm.{compaction,extraction}.model if this drifts.
+ * model in the catalog.
+ *
+ * RETIREMENT HISTORY: the prior pick here, `gpt-5.4-mini` (live-verified
+ * 2026-07-08 against a real `~/.codex/models_cache.json`, Codex CLI
+ * 0.142.2), was retired by OpenAI from ChatGPT-account Codex around
+ * September 2026. Every distill job failed with `HTTP 400 — "The
+ * 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT
+ * account"` for weeks because this constant didn't move with the catalog —
+ * the operator worked around it by hand-setting config to `gpt-6-luna` on
+ * 2026-11-05 well before this constant was fixed to match.
+ *
+ * Live-verified (2026-11-05) against the real `~/.codex/models_cache.json`
+ * as of that date:
+ *   gpt-6.1-sol             — codex CLI's own default, "Latest workhorse"
+ *   gpt-6-astra             — frontier
+ *   gpt-6.1-terra
+ *   gpt-6-sol
+ *   gpt-reserve             — HIDDEN, "Fast and affordable agentic coding"
+ *   gpt-6-luna              — "Fast and affordable model for easier tasks"
+ *                             (the current cheap tier)
+ *   gpt-5.6-sol/terra/luna  — older generation, still listed
+ *   codex-auto-review       — HIDDEN
+ * No `-mini` slug exists in this catalog at all — the cheap-tier naming
+ * moved to `-luna`. `pickCheapestCodexModel()` below checks `-luna` first,
+ * ahead of the now-legacy `-mini`/`-nano` suffixes, for exactly this reason,
+ * and never suggests a `visibility: 'hidden'` entry like `gpt-reserve` or
+ * `codex-auto-review`.
+ *
+ * OpenAI's model naming moves fast; verify against your own
+ * `~/.codex/models_cache.json` and override via
+ * config.llm.{compaction,extraction}.model if this drifts again.
  */
-const DEFAULT_MODEL = 'gpt-5.4-mini';
+const DEFAULT_MODEL = 'gpt-6-luna';
 
 /**
  * MODEL-DRIFT HARDENING (2026-07-13).
@@ -75,6 +99,13 @@ const DEFAULT_MODEL = 'gpt-5.4-mini';
 export interface CodexCatalogEntry {
   id: string;
   displayName?: string;
+  /** Present on newer catalogs (live-verified 2026-11-05). Entries marked
+   * `'hidden'` (e.g. `gpt-reserve`, `codex-auto-review`) are real, callable
+   * models the account has but that Codex's own UI doesn't list for
+   * selection — `pickCheapestCodexModel()` must never suggest one. Absent
+   * on older catalog snapshots; treat as "unknown/visible" when missing. */
+  visibility?: string;
+  description?: string;
 }
 
 export function readCodexModelCatalog(authPath?: string): CodexCatalogEntry[] | null {
@@ -89,9 +120,18 @@ export function readCodexModelCatalog(authPath?: string): CodexCatalogEntry[] | 
     if (!Array.isArray(list)) return null;
     const entries = list
       .map((m): CodexCatalogEntry | null => {
-        const o = m as { id?: string; slug?: string; model?: string; display_name?: string };
+        const o = m as {
+          id?: string;
+          slug?: string;
+          model?: string;
+          display_name?: string;
+          visibility?: string;
+          description?: string;
+        };
         const id = o.id ?? o.slug ?? o.model;
-        return id ? { id, displayName: o.display_name } : null;
+        return id
+          ? { id, displayName: o.display_name, visibility: o.visibility, description: o.description }
+          : null;
       })
       .filter((e): e is CodexCatalogEntry => e !== null);
     return entries.length > 0 ? entries : null;
@@ -100,9 +140,29 @@ export function readCodexModelCatalog(authPath?: string): CodexCatalogEntry[] | 
   }
 }
 
-/** Prefer a `-mini` (cheap tier) model from the catalog; else the first entry. */
+/**
+ * Prefer the cheap tier from the catalog, in order: an id containing
+ * `-luna` (current naming, 2026-11-05 catalog), else `-mini` (retired
+ * naming — kept so an older/cached catalog snapshot still resolves), else
+ * `-nano`, else the first `visibility: 'list'` entry when the catalog
+ * carries visibility at all, else the first entry outright.
+ *
+ * `visibility: 'hidden'` entries (`gpt-reserve`, `codex-auto-review`) are
+ * filtered out before any of the above runs, so a hidden model is never
+ * suggested even if its id happens to contain one of these substrings —
+ * unless EVERY entry is hidden, in which case we fall back to the full
+ * catalog rather than return nothing.
+ */
 export function pickCheapestCodexModel(catalog: CodexCatalogEntry[]): string {
-  return (catalog.find((m) => m.id.includes('-mini')) ?? catalog[0]!).id;
+  const visible = catalog.filter((m) => m.visibility !== 'hidden');
+  const pool = visible.length > 0 ? visible : catalog;
+  return (
+    pool.find((m) => m.id.includes('-luna')) ??
+    pool.find((m) => m.id.includes('-mini')) ??
+    pool.find((m) => m.id.includes('-nano')) ??
+    pool.find((m) => m.visibility === 'list') ??
+    pool[0]!
+  ).id;
 }
 
 /**

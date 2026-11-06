@@ -271,8 +271,8 @@ but does not yet produce.
 
 | Concern         | Codex subscription (cloud, **shipped default**) | Ollama (local, free)          | ONNX (local, in-process)          | Azure OpenAI (cloud)                         |
 |------------------|--------------------------------------------------|---------------------------------|--------------------------------------|----------------------------------------------|
-| LLM compaction   | gpt-5.4-mini                                     | qwen2.5:7b (default tier)      | —                                     | gpt-4.1 or any deployment                    |
-| LLM extraction   | gpt-5.4-mini                                     | qwen2.5:7b (default tier)      | —                                     | gpt-4.1 or any deployment                    |
+| LLM compaction   | gpt-6-luna                                       | qwen2.5:7b (default tier)      | —                                     | gpt-4.1 or any deployment                    |
+| LLM extraction   | gpt-6-luna                                       | qwen2.5:7b (default tier)      | —                                     | gpt-4.1 or any deployment                    |
 | Embedding        | — (no embeddings endpoint)                       | mxbai-embed-large (1024-dim)   | mxbai-embed-large (1024-dim, **shipped default**) | text-embedding-3-small (1024 via dimensions) |
 | Cost             | ChatGPT subscription quota (not tracked by `budget.daily_usd`) | $0 (local inference) | $0 (local inference)                 | ~$0.02/1K tokens + $0.0001/1K embed tokens   |
 | Setup            | `codex login`                                     | `ollama serve` + `ollama pull <model>` | none — bundled, no server needed | Azure portal + endpoint + deployment name    |

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **codex-subscription shipped default model `gpt-5.4-mini` → `gpt-6-luna`**: OpenAI retired
+  `gpt-5.4-mini` from ChatGPT-account Codex around September 2026 (every distill job failed with
+  `HTTP 400 "The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account"`),
+  so a fresh `init` was shipping a model that no longer exists. `DEFAULT_MODEL`
+  (`src/providers/llm/codex-subscription.ts`), the `init` wizard's codex-subscription default
+  (`src/cli/init.ts`), and the shipped `llm.compaction`/`llm.extraction` config defaults
+  (`src/config/config.ts`) now all point at `gpt-6-luna`, the cheap tier in the live 2026-11-05
+  catalog. `pickCheapestCodexModel()`'s cheap-tier heuristic now prefers an id containing `-luna`,
+  then the legacy `-mini`, then `-nano`, then the first non-hidden (`visibility: 'list'`) catalog
+  entry, then the first entry outright — and `readCodexModelCatalog()` now carries each entry's
+  `visibility`/`description` through so a `visibility: 'hidden'` model (`gpt-reserve`,
+  `codex-auto-review`) is never suggested as a replacement.
+
 ## [0.22.1] - 2026-08-06
 
 Daemon stability patch. Forensics on 3-7 days of production logs (2026-08-05)

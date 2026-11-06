@@ -734,7 +734,7 @@ function defaultLlmModelFor(provider: LlmProviderChoice, preset?: OpenAICompatPr
   switch (provider) {
     case 'azure-openai': return 'gpt-4.1';
     case 'openai-compatible': return 'gpt-4o-mini';
-    case 'codex-subscription': return 'gpt-5.4-mini'; // see providers/llm/codex-subscription.ts DEFAULT_MODEL
+    case 'codex-subscription': return 'gpt-6-luna'; // see providers/llm/codex-subscription.ts DEFAULT_MODEL
     // claude-sonnet-4-5 — Anthropic's current general-purpose flagship at
     // wizard-authoring time; unlike the other providers this has no
     // extraction-bench measurement in this repo yet (Wave 1 ships the
@@ -883,7 +883,7 @@ export async function init(argv: string[] = []): Promise<void> {
   // Only check/pull the models actually assigned to the ollama provider —
   // with 4 possible llmProvider values now (previously 2), computing
   // llmModel unconditionally here would try to `ollama pull` a non-Ollama
-  // model name (e.g. 'gpt-4.1' or 'gpt-5.4-mini') whenever
+  // model name (e.g. 'gpt-4.1' or 'gpt-6-luna') whenever
   // embedProvider=ollama but llmProvider is something else, aborting init.
   //
   // Ollama is also ON-DEMAND, not hard-required (item 1): route through

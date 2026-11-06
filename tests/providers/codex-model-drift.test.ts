@@ -26,6 +26,7 @@ import {
   readCodexModelCatalog,
   pickCheapestCodexModel,
   validateCodexModel,
+  type CodexCatalogEntry,
 } from '../../src/providers/llm/codex-subscription.js';
 
 /** The real catalog shape, as found on disk 2026-07-13 (Codex CLI). */
@@ -61,9 +62,9 @@ describe('codex model-drift hardening', () => {
     expect(catalog).toHaveLength(7);
   });
 
-  it('picks the -mini (cheap tier) model', () => {
+  it('picks the -luna model over -mini when both are present in the catalog (2026-11-05: -luna is the current cheap-tier naming, preferred ahead of the legacy -mini)', () => {
     const catalog = readCodexModelCatalog(seedCatalog(REAL_CATALOG))!;
-    expect(pickCheapestCodexModel(catalog)).toBe('gpt-5.4-mini');
+    expect(pickCheapestCodexModel(catalog)).toBe('gpt-5.6-luna');
   });
 
   it('catches the EXACT drift that cost the debugging time: gpt-5-mini is not real', () => {
@@ -95,5 +96,108 @@ describe('codex model-drift hardening', () => {
   it('does NOT block on a malformed catalog either', () => {
     const authPath = seedCatalog({ garbage: true });
     expect(readCodexModelCatalog(authPath)).toBeNull();
+  });
+});
+
+/**
+ * 2026-11-05: `gpt-5.4-mini` itself was retired by OpenAI from
+ * ChatGPT-account Codex (~Sept 2026) — every distill job failed with
+ * `HTTP 400 "The 'gpt-5.4-mini' model is not supported when using Codex
+ * with a ChatGPT account"` until config was hand-switched to `gpt-6-luna`.
+ * This is the real live `~/.codex/models_cache.json` shape as of that date
+ * (objects keyed by `slug`, carrying `visibility`) — no `-mini` slug exists
+ * in it at all; the cheap tier moved to `-luna`.
+ */
+const CATALOG_2026_11_05 = {
+  models: [
+    { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', visibility: 'list', description: 'Latest workhorse' },
+    { slug: 'gpt-6-astra', display_name: 'GPT-6-Astra', visibility: 'list', description: 'Frontier' },
+    { slug: 'gpt-6.1-terra', display_name: 'GPT-6.1-Terra', visibility: 'list' },
+    { slug: 'gpt-6-sol', display_name: 'GPT-6-Sol', visibility: 'list' },
+    {
+      slug: 'gpt-reserve',
+      display_name: 'GPT-Reserve',
+      visibility: 'hidden',
+      description: 'Fast and affordable agentic coding',
+    },
+    {
+      slug: 'gpt-6-luna',
+      display_name: 'GPT-6-Luna',
+      visibility: 'list',
+      description: 'Fast and affordable model for easier tasks',
+    },
+    { slug: 'gpt-5.6-sol', display_name: 'GPT-5.6-Sol', visibility: 'list' },
+    { slug: 'gpt-5.6-terra', display_name: 'GPT-5.6-Terra', visibility: 'list' },
+    { slug: 'gpt-5.6-luna', display_name: 'GPT-5.6-Luna', visibility: 'list' },
+    { slug: 'codex-auto-review', display_name: 'Codex Auto Review', visibility: 'hidden' },
+  ],
+};
+
+describe('pickCheapestCodexModel ordering (2026-11-05 catalog, FEAT: gpt-5.4-mini retirement)', () => {
+  it('picks gpt-6-luna from the real 2026-11-05 catalog — never a hidden entry', () => {
+    const authPath = seedCatalog(CATALOG_2026_11_05);
+    const catalog = readCodexModelCatalog(authPath)!;
+    expect(pickCheapestCodexModel(catalog)).toBe('gpt-6-luna');
+  });
+
+  it('prefers -luna over -mini when both are present', () => {
+    const catalog: CodexCatalogEntry[] = [
+      { id: 'gpt-6-sol', visibility: 'list' },
+      { id: 'gpt-5.4-mini', visibility: 'list' },
+      { id: 'gpt-6-luna', visibility: 'list' },
+    ];
+    expect(pickCheapestCodexModel(catalog)).toBe('gpt-6-luna');
+  });
+
+  it('falls back to -mini when no -luna entry exists (older/cached catalog)', () => {
+    const catalog: CodexCatalogEntry[] = [
+      { id: 'gpt-5.5' },
+      { id: 'gpt-5.4-mini' },
+      { id: 'codex-auto-review', visibility: 'hidden' },
+    ];
+    expect(pickCheapestCodexModel(catalog)).toBe('gpt-5.4-mini');
+  });
+
+  it('falls back to -nano when neither -luna nor -mini exists', () => {
+    const catalog: CodexCatalogEntry[] = [
+      { id: 'gpt-6-astra', visibility: 'list' },
+      { id: 'gpt-6-nano', visibility: 'list' },
+    ];
+    expect(pickCheapestCodexModel(catalog)).toBe('gpt-6-nano');
+  });
+
+  it('falls back to the first visibility:list entry when nothing matches luna/mini/nano', () => {
+    const catalog: CodexCatalogEntry[] = [
+      { id: 'codex-auto-review', visibility: 'hidden' },
+      { id: 'gpt-6-astra', visibility: 'list' },
+      { id: 'gpt-6-sol', visibility: 'list' },
+    ];
+    expect(pickCheapestCodexModel(catalog)).toBe('gpt-6-astra');
+  });
+
+  it('never suggests a hidden entry, even when its id contains -mini/-luna/-nano', () => {
+    const catalog: CodexCatalogEntry[] = [
+      { id: 'gpt-reserve-mini', visibility: 'hidden' }, // would match '-mini' if not filtered
+      { id: 'gpt-6-sol', visibility: 'list' },
+    ];
+    expect(pickCheapestCodexModel(catalog)).toBe('gpt-6-sol');
+  });
+
+  it('falls back to the first entry when the catalog carries no visibility info at all', () => {
+    const catalog: CodexCatalogEntry[] = [{ id: 'gpt-5.5' }, { id: 'gpt-5.4' }];
+    expect(pickCheapestCodexModel(catalog)).toBe('gpt-5.5');
+  });
+
+  it('validateCodexModel suggests gpt-6-luna for a retired gpt-5.4-mini against the real 2026-11-05 catalog', () => {
+    const authPath = seedCatalog(CATALOG_2026_11_05);
+    const catalog = readCodexModelCatalog(authPath);
+    const warning = validateCodexModel('gpt-5.4-mini', catalog);
+
+    expect(warning).toBeTruthy();
+    expect(warning).toContain("model 'gpt-5.4-mini' is NOT in this account's Codex catalog");
+    expect(warning).toContain('suggested (cheap tier): gpt-6-luna');
+    // The suggestion must never be a hidden model.
+    expect(warning).not.toMatch(/suggested \(cheap tier\): gpt-reserve/);
+    expect(warning).not.toMatch(/suggested \(cheap tier\): codex-auto-review/);
   });
 });

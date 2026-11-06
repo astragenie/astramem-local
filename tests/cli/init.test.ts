@@ -318,11 +318,14 @@ describe('init wizard — non-TTY mode', () => {
   });
 
   // v0.18.0: the shipped LLM PROVIDER default (distinct from the ollama
-  // sub-default tested above) flipped to codex-subscription/gpt-5.4-mini.
+  // sub-default tested above) flipped to codex-subscription/gpt-6-luna
+  // (originally gpt-5.4-mini; OpenAI retired that slug from
+  // ChatGPT-account Codex ~Sept 2026 — see
+  // src/providers/llm/codex-subscription.ts DEFAULT_MODEL).
   // No env override for ASTRA_MEMORY_INIT_LLM_PROVIDER here — this proves
   // the non-TTY path's own fallback (gatherNonInteractive in src/cli/init.ts)
   // picks the new default, not just defaultConfig()'s.
-  it('non-TTY init with no LLM_PROVIDER override writes the shipped default (codex-subscription/gpt-5.4-mini) to config.yaml', async () => {
+  it('non-TTY init with no LLM_PROVIDER override writes the shipped default (codex-subscription/gpt-6-luna) to config.yaml', async () => {
     const dataDir = makeTmpDir();
     const cfgDir = makeTmpDir();
 
@@ -344,7 +347,7 @@ describe('init wizard — non-TTY mode', () => {
     expect(configPath, 'config.yaml must exist').toBeDefined();
     const content = readFileSync(configPath!, 'utf8');
     expect(content).toContain('provider: codex-subscription');
-    expect(content).toContain('model: gpt-5.4-mini');
+    expect(content).toContain('model: gpt-6-luna');
     // Embedding is unaffected by the provider default flip.
     expect(content).toContain('provider: ollama');
     expect(content).toContain('model: mxbai-embed-large');

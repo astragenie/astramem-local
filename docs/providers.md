@@ -401,16 +401,19 @@ AstraMemory Local never runs the login flow itself — it only reads the resulti
 llm:
   compaction:
     provider: codex-subscription
-    model: gpt-5.4-mini    # cheapest tier — live-verified against ~/.codex/models_cache.json (2026-07-08)
+    model: gpt-6-luna    # cheapest tier — live-verified against ~/.codex/models_cache.json (2026-11-05)
   extraction:
     provider: codex-subscription
-    model: gpt-5.4-mini
+    model: gpt-6-luna
 
 codexSubscription: {}            # authPath override only needed for non-default CODEX_HOME
 ```
 
 The model catalog moves fast — check your own `~/.codex/models_cache.json` (`models[].slug`) rather
-than trusting this default indefinitely.
+than trusting this default indefinitely. The original default, `gpt-5.4-mini`, was retired by
+OpenAI from ChatGPT-account Codex around September 2026 (`HTTP 400 "The 'gpt-5.4-mini' model is
+not supported when using Codex with a ChatGPT account"`); `gpt-6-luna` is its 2026-11-05 cheap-tier
+replacement.
 
 `init` only offers this choice interactively when it detects `~/.codex/auth.json` already exists.
 
@@ -515,10 +518,15 @@ there is currently no working way to cap output length or set temperature on thi
 caller-requested value is silently unenforceable rather than erroring the whole call.
 
 The default model was corrected from a guessed `gpt-5.1-codex-mini` (which doesn't exist in the
-catalog at all) to **`gpt-5.4-mini`**, read directly from the real `~/.codex/models_cache.json`
+catalog at all) to `gpt-5.4-mini`, read directly from the real `~/.codex/models_cache.json`
 (client_version 0.142.2) — the full catalog was exactly `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`,
-`codex-auto-review`; the `-mini` suffix and lack of speed/service tiers make it the clear cheap-tier
-pick. This catalog moves fast — re-check your own `~/.codex/models_cache.json` periodically.
+`codex-auto-review`; the `-mini` suffix and lack of speed/service tiers made it the clear cheap-tier
+pick at the time. This catalog moves fast — re-check your own `~/.codex/models_cache.json`
+periodically: OpenAI retired `gpt-5.4-mini` itself from ChatGPT-account Codex around September
+2026 (every distill job failed with `HTTP 400 "The 'gpt-5.4-mini' model is not supported when
+using Codex with a ChatGPT account"`), and the default is now **`gpt-6-luna`**, read from the real
+`~/.codex/models_cache.json` as of 2026-11-05 — that catalog no longer carries any `-mini` slug at
+all; the cheap tier's naming moved to `-luna`.
 
 The 401 → refresh → retry path was also exercised live: the copy's `access_token` was deliberately
 corrupted to force a genuine 401 from the real server, the code's refresh flow ran against the
@@ -539,7 +547,8 @@ an ordinary `codex login` re-run. There is no urgency; this is a one-time, alrea
 consequence of the verification exercise, not an ongoing risk from normal use of this provider.
 
 Not yet live-verified: multi-turn conversations beyond a single system+user pair, and behavior at
-higher `reasoning.effort` values (`medium`/`high`/`xhigh`) or non-mini models (`gpt-5.4`, `gpt-5.5`).
+higher `reasoning.effort` values (`medium`/`high`/`xhigh`) or non-cheap-tier models (`gpt-6-astra`,
+`gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-sol`).
 
 ---
 

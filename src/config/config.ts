@@ -1095,8 +1095,11 @@ export interface Config {
      *  judge override uses.
      *
      *  Motivating evidence (43-fixture extraction bench, 2026-07-16, same
-     *  judge): codex gpt-5.4-mini is surgical (94% precision, 49% recall,
-     *  misses half but is almost never wrong) while local qwen3:8b is
+     *  judge, measured on `gpt-5.4-mini` — since retired by OpenAI from
+     *  ChatGPT-account Codex, ~Sept 2026; the codex-subscription default is
+     *  now `gpt-6-luna`, not re-measured against this bench yet): codex was
+     *  surgical (94% precision, 49% recall, misses half but is almost never
+     *  wrong) while local qwen3:8b is
      *  greedy (70% precision, 84% recall, ~30% junk but finds nearly
      *  everything). Pass A is the primary extraction; pass B (the
      *  "specifics sweeper") is a RECALL task — exactly the profile where
@@ -1572,9 +1575,12 @@ export function defaultConfig(): Config {
     auth: { devNoAuth: false },
     llm: {
       // v0.18.0: shipped default switched from local-ollama qwen to
-      // codex-subscription (gpt-5.4-mini, the DEFAULT_MODEL cheap tier —
-      // see src/providers/llm/codex-subscription.ts). Every local-ollama
-      // qwen default tried here has broken in production at least once:
+      // codex-subscription (originally gpt-5.4-mini; OpenAI retired that
+      // slug from ChatGPT-account Codex ~Sept 2026, so the shipped model is
+      // now gpt-6-luna, the DEFAULT_MODEL cheap tier as of the 2026-11-05
+      // catalog — see src/providers/llm/codex-subscription.ts). Every
+      // local-ollama qwen default tried here has broken in production at
+      // least once:
       // qwen3:8b returned empty output under thinking mode + format:json
       // (see "qwen3:8b breaks distill extract" in CLAUDE.md) and also blew
       // this hardware class's 8 GB VRAM ceiling once the mxbai-embed-large
@@ -1603,8 +1609,8 @@ export function defaultConfig(): Config {
       // provider pick. Users who explicitly pick ollama in the wizard still
       // get DEFAULT_OLLAMA_LLM_MODEL (qwen2.5:7b) as that provider's
       // sub-default.
-      compaction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' },
-      extraction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' }
+      compaction: { provider: 'codex-subscription', model: 'gpt-6-luna' },
+      extraction: { provider: 'codex-subscription', model: 'gpt-6-luna' }
       // P0-1: `quotaBreaker` deliberately left UNSET here, mirroring
       // `rateLimit` immediately above (an object-valued optional field, once
       // set, must round-trip through configToYaml's completeness gate — see
