@@ -9,8 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-06
+
+Schema 64 release (migration `064-cost-ledger.sql` was unreleased since August) plus the
+provenance-leak fix set and the dashboard agent filter. Minor bump because of the schema change.
+
+### Added
+
+- **Dashboard agent filter** (FEAT-554): Mission Control gets an `agent` select grouped by plugin
+  prefix (`crew`, `runner`, `caveman`, `(core)` …) with counts, a top-N cap plus free-text fallback,
+  an Agent column in the activity feed and a deep link `/dashboard?agent=crew:reviewer`. Filters
+  compose with project/profile and survive pagination.
+- **Token-cost ledger** (FEAT-476 Phase 0, #491): `cost_events` + `price_versions` tables
+  (migration 064), fixes the AC-5 undercount.
+- **Health**: vec-search timeout counters surfaced; doctor event-loop window persisted (#488).
+- **Boot**: timestamped boot-phase lines so a slow pre-bind open is self-explaining (#489).
+- `repo-identity-backfill --column repo|project|all --sessions` (FEAT-553): the FEAT-484 backfill
+  now also re-stamps the `project` column and the `sessions` table; candidates carry a redacted
+  `cwdBasename` and a `source` (`git-common-dir` | `string-heuristic`); preview is the default,
+  `--yes` mutates. Operator runbook: `docs/runbooks/provenance-backfill.md`.
+
 ### Fixed
 
+- **Provenance leak** (FEAT-553): Claude Code agent worktrees (`<repo>/.claude/worktrees/<x>`)
+  were stamped as `project`/`repo`. `deriveWorktreeSafeBasename` now recognises the nested layout
+  (string-only); ingest overrides a hook-stamped `project_id` only when it equals `basename(cwd)`
+  (DEC-017 trust policy) and emits a structured override log with basenames only. Hook-side fix
+  tracked in `astragenie/astramem-plugin#68`.
+- Dashboard: selecting an agent while the free-text box is blank no longer silently drops the
+  filter (`parseMemoryFilterParam` takes the last non-blank repeated value).
 - **codex-subscription shipped default model `gpt-5.4-mini` → `gpt-6-luna`**: OpenAI retired
   `gpt-5.4-mini` from ChatGPT-account Codex around September 2026 (every distill job failed with
   `HTTP 400 "The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account"`),
@@ -23,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry, then the first entry outright — and `readCodexModelCatalog()` now carries each entry's
   `visibility`/`description` through so a `visibility: 'hidden'` model (`gpt-reserve`,
   `codex-auto-review`) is never suggested as a replacement.
+
+### Docs
+
+- Public-flip README touch-up, investor demo runbook (#490); DEC-017; `docs/memory.md` outage
+  and provenance records.
 
 ## [0.22.1] - 2026-08-06
 
