@@ -1,7 +1,7 @@
 ---
 id: SLICE-445
 title: "Extend backfill core to the project column and the sessions table, dry-run only"
-status: pending
+status: completed
 feature: FEAT-553
 phase: null
 priority: P1
@@ -9,20 +9,15 @@ target_release: null
 requires_validation: true
 risk: high
 created: 2026-11-05
-updated: 2026-11-05
+updated: 2026-11-06
 effort_points: 2
 estimated_tokens: 100000
-touches_files:
-  - src/tag-hygiene/repo-identity-backfill.ts
-  - src/cli/repo-identity-backfill.ts
-  - src/cli/index.ts
-  - tests/tag-hygiene/repo-identity-backfill.test.ts
+touches_files: [src/tag-hygiene/repo-identity-backfill.ts, src/cli/repo-identity-backfill.ts, src/cli/index.ts, tests/tag-hygiene/repo-identity-backfill.test.ts]
 wave: 2
-depends_on:
-  - SLICE-442
-  - SLICE-443
+depends_on: [SLICE-442, SLICE-443]
 wave_attempts: 0
 pending_fix: false
+completed_at: 2026-11-06
 ---
 # SLICE-445: Extend backfill core to the project column and the sessions table, dry-run only
 
