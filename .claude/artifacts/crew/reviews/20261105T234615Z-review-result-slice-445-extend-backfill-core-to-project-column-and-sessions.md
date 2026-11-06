@@ -1,7 +1,69 @@
 ---
 decision: approved
-not_checked: ["CLI-level argv parsing (--column/--sessions/--yes) via an automated test — no DB-injection seam exists on repoIdentityBackfillCommand; verified by static review + isolated parsing check + --help render instead"]
+not_checked: []
+fix_pass: 20261105T235959Z
 ---
+
+> **Fix-pass addendum (2026-11-05, post-independent-verification):** three
+> claims below did not hold up and are corrected here rather than silently
+> rewritten in place, so the original review text stays legible as what was
+> actually said at the time:
+>
+> 1. **"all 6 original tests pass unmodified in behavior, renamed fields
+>    only"** (Summary, below) is wrong on two counts: the base file
+>    (`a40d1d39`) had **7** tests in that `describe` block, not 6, and one of
+>    them — `MIGRATION HAZARD guard` — was **not** preserved unmodified; its
+>    assertions were inverted (dry-run default-column resolution on a
+>    deleted-but-trusted-shape worktree: was `applied:0/unresolved:1`, is now
+>    `applied:1/unresolved:0`). This IS the correct, DEC-017 rule-(4)-
+>    authorized behavior (`.claude/artifacts/loop/decisions/DEC-017.md`,
+>    "repo gets parity with project") — the handoff's own "Design decision"
+>    section already said this plainly ("intentionally changed, not just
+>    renamed"); this review's Summary line should have matched that instead
+>    of asserting unmodified-behavior equivalence. No code or test change
+>    follows from this — it is a documentation-accuracy fix only.
+> 2. **The "not_checked" CLI-argv-parsing gap is now closed.** A new
+>    `describe('repoIdentityBackfillCommand — CLI layer ...')` block (9
+>    cases) was added to `tests/tag-hygiene/repo-identity-backfill.test.ts`,
+>    exercising `repoIdentityBackfillCommand` directly against a file-backed
+>    temp datadir via `ASTRA_MEMORY_DATADIR` (the same safe-isolation pattern
+>    `tests/cli/queue-purge.test.ts` already uses for a sibling
+>    `openRuntimeDb()`-based command — never the production datadir):
+>    `--column` validation, default-is-dry-run, `--yes` gating, `--column
+>    project`, `--column all` (via `--json`), `--sessions` wiring (on and
+>    off), and the AC-9 no-absolute-path assertion against actual
+>    console.log output (not just a static read-through). `not_checked`
+>    above is cleared accordingly.
+> 3. **AC-6's named property — "two consecutive dry-runs produce identical
+>    counts" — now has a real test**, not just dry-run-then-apply idempotency
+>    (which is a different property). Two new core-level tests call
+>    `runRepoIdentityBackfill` with `dryRun: true` **twice in a row** against
+>    the same unmodified DB and assert `toEqual` on the full result
+>    (including the candidate list), for both the `repo` default and the
+>    `project` + `--sessions` combination; a CLI-level test does the same
+>    through `repoIdentityBackfillCommand` twice with no `--yes`. The
+>    Validation artifact's claim of having verified this via "the
+>    idempotent-second-run tests" was inaccurate (those call `dryRun: false`
+>    twice — apply, then apply again — not `dryRun: true` twice); corrected
+>    there too.
+> 4. **AC-8's dashboard-dropdown half is now covered**, without touching
+>    `src/server/queries/dashboard.ts` (still out of this slice's
+>    `touches_files` scope): a new test imports the real, unmodified
+>    `queryProjectOptions` read-only and asserts its post-apply output
+>    against a seeded mix of resolvable/unresolvable/already-correct rows.
+>    Two more new tests assert the GLOB-count equality AC-8 names literally
+>    (`SELECT COUNT(*) ... WHERE <column> GLOB 'agent-*'` on BOTH `memories`
+>    and `sessions`, both equal to `result.unresolved`).
+>
+> Evidence for all of the above: `bun run build` clean; `npx tsc -p
+> tsconfig.tests.json --noEmit` 0 errors; `bunx vitest run
+> tests/tag-hygiene/repo-identity-backfill.test.ts` **35/35 passed** (was
+> 21/21 before this fix pass — 14 new cases: 2 AC-6, 3 AC-8, 9 CLI-layer);
+> `env -u ASTRA_SKIP_CONSOLIDATE bunx vitest run tests/tag-hygiene tests/cli`
+> **315/315 passed** (33 files, no regression); `node contracts/validate.mjs`
+> 58/58. This review is still a builder/fix-pass self-review, not an
+> independently-dispatched reviewer pass — that governance gap is unchanged
+> by this addendum and is called out again in the handoff.
 # Review Result: SLICE-445: Extend backfill core to the project column and the sessions table — review
 
 - Created: 2026-11-05T23:46:15.000Z

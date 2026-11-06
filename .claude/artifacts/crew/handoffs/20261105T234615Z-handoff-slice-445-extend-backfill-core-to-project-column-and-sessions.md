@@ -1,5 +1,48 @@
 # Handoff: SLICE-445 (FEAT-553) — Extend backfill core to the project column and the sessions table, dry-run only
 
+> **Fix-pass addendum (2026-11-05, post-independent-verification):**
+> independent verifiers refuted the original builder pass on four grounds —
+> AC-8 had no test evidence at all (neither the GLOB-count property nor the
+> dashboard-dropdown half); AC-6's named "two consecutive dry-runs produce
+> identical counts" property had no test performing it (every existing
+> idempotent-second-run test uses `dryRun: false` twice, not `dryRun: true`
+> twice — the Validation artifact's claim otherwise was inaccurate and is
+> corrected there); the CLI entry point (`repoIdentityBackfillCommand`) had
+> zero automated coverage of `--column`/`--sessions`/`--yes`/`--json`
+> wiring; and the Review artifact's "all 6 original tests pass unmodified...
+> renamed fields only" overclaimed (base file had 7, one — MIGRATION HAZARD
+> guard — was intentionally inverted per DEC-017 rule 4, not preserved).
+>
+> This fix pass closes all four within the SAME `touches_files` scope (no
+> new file, no new allowance) by extending
+> `tests/tag-hygiene/repo-identity-backfill.test.ts` with 14 new cases: 2
+> for AC-6 (true two-consecutive-`dryRun:true` core tests, repo-default and
+> project+`--sessions`), 3 for AC-8 (repo-column and project-column
+> GLOB-count parity on both `memories` and `sessions`; a dashboard-dropdown
+> test that imports the real, unmodified `queryProjectOptions` read-only —
+> `src/server/queries/dashboard.ts` is still untouched), and a new
+> `repoIdentityBackfillCommand` CLI-layer describe block (9 cases) run
+> against a file-backed temp datadir via `ASTRA_MEMORY_DATADIR` (the same
+> safe pattern `tests/cli/queue-purge.test.ts` already uses for a sibling
+> `openRuntimeDb()`-based command — never the production datadir). The
+> Review and Validation artifacts carry their own addenda correcting the
+> specific inaccurate claims rather than silently rewriting history. See the
+> updated "Evidence" and "AC checklist" sections below (marked inline) and
+> the slice file's own in-scope bullet, corrected to state the DEC-017
+> rule-(4) default-column behavior change precisely instead of the
+> inaccurate blanket "byte-identical" phrasing.
+>
+> Not addressed by this fix pass (orchestration/ceremony concerns, outside
+> a fix-agent's scope): the slice file itself is still in `pending/` with
+> `status: pending` and `wave_attempts: 0`; `FEAT-553.md`'s
+> `slices_complete` still omits SLICE-445; no `final-synthesis` artifact
+> exists for this slice. The `/devcrew:slice complete` ceremony (moving the
+> slice file, updating the feature file, writing final-synthesis) was not
+> run here — that is the lead/orchestrator's step, not a code-correctness
+> fix. Likewise, review and validation remain builder/fix-pass
+> self-performed (no independently-dispatched reviewer/validator subagent
+> ran in this session) — that governance gap is unchanged by this pass.
+
 - **Objective**: generalise `runRepoIdentityBackfill` (FEAT-484) so it can
   scan + re-stamp `memories.project` (not just `repo`) and, optionally, the
   originating `sessions.<column>` row too, using the DEC-017 trust-gated
@@ -18,14 +61,20 @@
 - `src/cli/repo-identity-backfill.ts`
 - `src/cli/index.ts`
 - `tests/tag-hygiene/repo-identity-backfill.test.ts`
-- (plus this handoff / review / validation artifact under `.claude/artifacts/crew/`)
+- (plus this handoff / review / validation artifact under `.claude/artifacts/crew/`,
+  and — fix pass only — the slice file itself under
+  `.claude/artifacts/loop/ai-loop/slices/pending/`, text-only, to correct
+  the inaccurate "byte-identical" in-scope claim; no frontmatter/ceremony
+  field touched)
 
-`git status --porcelain` at commit time shows exactly those 4 source/test
-files — nothing else was touched. A `bun run test` side effect that
-rewrites `scripts/eval/consolidation-bench/results/latest-run.json`'s
+`git status --porcelain` at original commit time showed exactly those 4
+source/test files — nothing else was touched. A `bun run test` side effect
+that rewrites `scripts/eval/consolidation-bench/results/latest-run.json`'s
 `generatedAt` timestamp (the same pre-existing non-idempotent-suite issue
 SLICE-443's handoff flagged) was reverted with `git checkout --` before
-commit.
+commit. The fix pass additionally touches the test file plus these three
+artifact files and the slice file — still within the same `touches_files`
++ artifacts/slice-file allowance given to the fix agent.
 
 ## Forbidden scope — respected
 
@@ -191,6 +240,24 @@ Rewritten with the renamed field names and extended with (grouped by
   from running the full suite was reverted with `git checkout --` before
   commit (same issue SLICE-443's handoff flagged, same fix).
 
+**Fix-pass evidence (2026-11-05)**, additive to the above:
+
+- `bun run build` (`tsc -p .`) — clean.
+- `npx tsc -p tsconfig.tests.json --noEmit` — 0 errors.
+- `bunx vitest run tests/tag-hygiene/repo-identity-backfill.test.ts` —
+  **35/35 passed** (was 21/21; 14 new: 2 AC-6 core, 3 AC-8 core/dashboard, 9
+  CLI-layer).
+- `env -u ASTRA_SKIP_CONSOLIDATE bunx vitest run tests/tag-hygiene
+  tests/cli` — **315/315 passed** (33 files — broader regression check
+  than the sibling-module-only check above, covering every tag-hygiene and
+  CLI test in the repo).
+- `node contracts/validate.mjs` — 58/58.
+- `git status --porcelain` — exactly
+  `tests/tag-hygiene/repo-identity-backfill.test.ts` plus this handoff /
+  the review / validation artifacts / the slice file (in-scope text
+  correction) — no other file touched; no stray side-effect files from any
+  test run.
+
 ## AC checklist (ACs scoped to this slice per the slice file: AC-4, AC-6, AC-8, AC-9)
 
 - **AC-4** (no-session / no-cwd / unresolved never-guess guard preserved):
@@ -200,21 +267,32 @@ Rewritten with the renamed field names and extended with (grouped by
   3/3 passing.
 - **AC-6** (preview is default, `--yes` required to mutate, preview
   reports scanned/would-re-stamp/unresolved + `joiningExistingCount`, two
-  dry runs are byte-identical): PASS at the core-function level — every
-  new test calls the core with `dryRun: true` first and asserts zero
-  mutation, and the pre-existing `joiningExistingCount` test is unchanged
-  and still passes. `--yes`-gating and the CLI's preview text were
-  extended (see "Deliverable" above) but not exercised by a new automated
-  CLI-level test — see "Known gap" below for why and the mitigation
-  (manual verification done in this session).
-- **AC-8** (post-apply counts match reported `unresolved`, nothing
-  silently left behind): PASS by construction — `scanned = applied +
-  unresolved` is an algebraic invariant of the loop (every scanned row
-  takes exactly one of the three paths), verified across every test's
-  assertions; no test found a row unaccounted for. The dashboard-side half
-  of this AC (`queryProjectOptions`, `src/server/queries/dashboard.ts`) is
-  untouched — out of this slice's scope by the slice's own text ("the
-  remaining FEAT-553 ACs are owned by sibling slices").
+  dry runs are byte-identical): **PASS, with a real test for the named
+  property** (fix-pass, 2026-11-05) — two new core-level tests call
+  `runRepoIdentityBackfill` with `dryRun: true` TWICE in a row against the
+  same unmodified DB and assert `toEqual` on the full result (repo-default
+  and project+`--sessions`); a new CLI-level test does the same through
+  `repoIdentityBackfillCommand` with no `--yes`, asserting the printed
+  preview text is byte-identical across both calls. `--yes`-gating is now
+  exercised by an automated CLI-level test too (see "AC checklist" below,
+  Known gap section updated).
+- **AC-8** (post-apply counts match reported `unresolved` on BOTH
+  `memories` and `sessions`; dashboard dropdown lists only resolvable names
+  plus the explicitly-unresolved remainder): **PASS, now with direct tests
+  for the full AC text** (fix-pass, 2026-11-05) — two new core-level tests
+  assert the literal GLOB-count equality AC-8 names (`SELECT COUNT(*) ...
+  WHERE <column> GLOB 'agent-*'` on both `memories` and `sessions`, both
+  equal to `result.unresolved`) for the repo and project columns; a third
+  imports the real, unmodified `queryProjectOptions`
+  (`src/server/queries/dashboard.ts` — still untouched, read-only import)
+  and asserts its post-apply output against a seeded mix of
+  resolvable/unresolvable/already-correct rows. The earlier "PASS by
+  construction... dashboard-side half... out of this slice's scope"
+  framing is superseded — the independent verifiers correctly read the
+  slice's own frontmatter ("ACs scoped to this slice: AC-4, AC-6, AC-8,
+  AC-9", no partial qualifier) as not actually carving out the
+  dashboard-dropdown half, and that half is now covered without any change
+  to `dashboard.ts`.
 - **AC-9** (preview output / override log never shows an absolute path,
   only a repo-root basename): PASS — the CLI's human-readable output path
   was audited line-by-line; the only values printed are
@@ -224,24 +302,29 @@ Rewritten with the renamed field names and extended with (grouped by
   CLI file's header comment. The AC-7 override-log-event half belongs to
   sibling SLICE-444.
 
-## Known gap (flagged, not fixed — out of this slice's scope)
+## Known gap — CLOSED by fix pass (2026-11-05)
 
-- There is no CLI-level (`tests/cli/repo-identity-backfill.test.ts`) test
-  file for this command — not for FEAT-484 either, and still not after
-  this slice, because `repoIdentityBackfillCommand` calls
-  `openRuntimeDb()` directly (no DB-injection seam) and the slice's
-  `touches_files` allowlist does not include a new CLI test file. `--yes`
-  gating, `--column all`'s two-pass composition, and the new preview text
-  were verified by (a) static code review, (b) a tiny isolated Node script
-  exercising the exact `parseArg`/`hasFlag` logic copied into the CLI file
-  (confirmed `--column`/`--sessions` parsing matches intent), and (c)
-  running `node dist/cli/index.js --help` to confirm the help text renders
-  correctly — not by an automated CLI-level test. A future slice adding a
-  DB-injectable seam to `repoIdentityBackfillCommand` (and the matching
-  test file) would close this gap for every command in `src/cli/`, not
-  just this one — worth a backlog note, not filed as a new FEAT by this
-  slice (same posture SLICE-443's handoff took for its own non-blocking
-  follow-up).
+- ~~There is no CLI-level test file for this command...~~ Closed without a
+  new file: `tests/tag-hygiene/repo-identity-backfill.test.ts` (already in
+  this slice's `touches_files` allowlist) gained a
+  `repoIdentityBackfillCommand` CLI-layer `describe` block (9 cases) that
+  calls the command directly against a file-backed temp datadir via
+  `ASTRA_MEMORY_DATADIR` — the same safe-isolation pattern
+  `tests/cli/queue-purge.test.ts` already uses for a sibling
+  `openRuntimeDb()`-based command, never the production datadir. Covered:
+  `--column` validation (invalid value → exit 1, no db opened), default
+  dry-run (zero mutations, preview text), a second identical dry-run
+  (byte-identical preview), `--yes` apply, `--column project`, `--column
+  all` (via `--json`, both columns reported independently), `--sessions`
+  wired through (and NOT wired through when omitted — the FEAT-484
+  byte-identical default), and AC-9's no-absolute-path claim asserted
+  against real captured console output rather than a static read-through.
+  The remaining non-blocking note from the original gap — hoisting a
+  DB-injectable seam into `openRuntimeDb`/`repoIdentityBackfillCommand` for
+  every `src/cli/*.ts` command in this shape — still stands as a future-
+  slice follow-up; it was not needed to close THIS gap because seeding the
+  file-backed datadir directly (open, migrate, insert, close — before the
+  command opens its own connection to the same file) was sufficient.
 
 ## Confidence level
 
@@ -253,14 +336,20 @@ suite is at documented baseline health.
 
 ## Risks / open questions
 
-- The `--column all` CLI composition and `--sessions`/`--yes` CLI-layer
-  argument handling are verified by code review + the isolated parsing
-  check above, not by an automated CLI test (see "Known gap"). Reviewer
-  should re-check that reading if closing this gap is wanted before
-  SLICE-447 (the operator-gated prod apply) runs against real data.
+- ~~The `--column all` CLI composition and `--sessions`/`--yes` CLI-layer
+  argument handling are verified by code review... not by an automated CLI
+  test~~ — **closed by the fix pass**: now covered by automated tests (see
+  "Known gap", now marked CLOSED).
 - `isTrustedWorktreeCwdShape()` duplicates ~15 lines of structural logic
   that conceptually belongs in `cwd-basename.ts` (out of scope here) — a
   future slice could hoist a shared, exported predicate there instead.
+- **Still open, outside a fix-agent's scope**: the slice-close ceremony
+  (`/devcrew:slice complete`) has not run — the slice file is still
+  `pending/` with `status: pending`, `FEAT-553.md`'s `slices_complete`
+  still omits SLICE-445, and no `final-synthesis` artifact exists for this
+  slice. Review and validation remain builder/fix-pass self-performed, not
+  independently dispatched. Both are lead/orchestrator concerns to pick up
+  next, not code-correctness gaps this pass could close.
 
 ## Suggested next handoff
 

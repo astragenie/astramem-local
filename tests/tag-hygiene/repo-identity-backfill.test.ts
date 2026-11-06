@@ -12,7 +12,7 @@
  * the PAST (repo lesson: "verify_dont_migrate" / "valid_to means unbounded"
  * both trace back to a migration fixture whose 'now' wasn't).
  */
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -24,6 +24,17 @@ import { migrate } from '../../src/storage/migrate.js';
 import { runRepoIdentityBackfill } from '../../src/tag-hygiene/repo-identity-backfill.js';
 import { __clearRepoIdentityCacheForTests } from '../../src/tag-hygiene/repo-identity.js';
 import type { DB } from '../../src/storage/db.js';
+// AC-8 evidence: the dashboard dropdown half of AC-8 is verified here by
+// importing the REAL, unmodified query (read-only import — this file does
+// not edit src/server/queries/dashboard.ts, which is out of this slice's
+// touches_files scope) and asserting its behavior post-backfill.
+import { queryProjectOptions } from '../../src/server/queries/dashboard.js';
+// CLI-layer evidence (AC-6/AC-9 argv wiring): exercises the actual CLI
+// entry point against a file-backed temp datadir via ASTRA_MEMORY_DATADIR
+// (the same safe-isolation pattern tests/cli/queue-purge.test.ts already
+// uses for a sibling openRuntimeDb()-based command) — never the production
+// datadir.
+import { repoIdentityBackfillCommand } from '../../src/cli/repo-identity-backfill.js';
 
 // A fixed point safely in the past (repo lesson: fixture 'now' must never be
 // the actual present when validity/backfill logic is under test).
@@ -79,6 +90,31 @@ function mkTmpDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   tmpDirs.push(dir);
   return dir;
+}
+
+/** Seeds a FILE-backed datadir (not :memory:) the way the CLI layer opens
+ *  it (`openRuntimeDb` via `ASTRA_MEMORY_DATADIR`), for CLI-layer tests
+ *  that must exercise `repoIdentityBackfillCommand` itself rather than
+ *  calling the core function directly. Mirrors the seed/close pattern
+ *  tests/cli/queue-purge.test.ts already uses for a sibling
+ *  openRuntimeDb()-based command. */
+function seedFileDb(dataDir: string, seed: (db: DB) => void): void {
+  const db = openDb(join(dataDir, 'memory.sqlite'));
+  migrate(db);
+  seed(db);
+  db.close();
+}
+
+function readFileDbColumn(
+  dataDir: string,
+  table: 'memories' | 'sessions',
+  column: 'repo' | 'project',
+  id: string,
+): string | null {
+  const db = openDb(join(dataDir, 'memory.sqlite'));
+  const row = db.prepare(`SELECT ${column} as value FROM ${table} WHERE id = ?`).get(id) as { value: string | null };
+  db.close();
+  return row.value;
 }
 
 function git(cwd: string, args: string[]): void {
@@ -496,4 +532,352 @@ describe('runRepoIdentityBackfill — --column all composition (FEAT-553 CLI)', 
       expect(getMemoryColumn(db, projMem, 'project')).toBe('project-side-project');
     },
   );
+});
+
+describe('runRepoIdentityBackfill — AC-6: two consecutive dry-runs are byte-identical', () => {
+  it(
+    'calling dryRun:true TWICE in a row against the same unmodified DB reports identical ' +
+    'scanned/applied/unresolved/sessionsRestamped counts and identical candidate lists — proving ' +
+    'dry-run performs zero writes across repeats, not just on the first call',
+    () => {
+      const db = setupDb();
+      const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-feed00000f01');
+      const resolvableSession = randomUUID();
+      insertSession(db, resolvableSession, { repo: 'agent-feed00000f01', cwd: worktreeDir });
+      const memId = insertMemory(db, { session_id: resolvableSession, repo: 'agent-feed00000f01' });
+
+      // A genuinely-unresolvable row alongside it, so the identical-ness
+      // check also covers the unresolved branch, not just the happy path.
+      const unresolvableSession = randomUUID();
+      insertSession(db, unresolvableSession, { repo: 'agent-deadfeed0f02', cwd: null });
+      insertMemory(db, { session_id: unresolvableSession, repo: 'agent-deadfeed0f02' });
+
+      const first = runRepoIdentityBackfill(db, { dryRun: true, includeSessions: true });
+      const second = runRepoIdentityBackfill(db, { dryRun: true, includeSessions: true });
+
+      expect(second.scanned).toBe(first.scanned);
+      expect(second.applied).toBe(first.applied);
+      expect(second.unresolved).toBe(first.unresolved);
+      expect(second.sessionsRestamped).toBe(first.sessionsRestamped);
+      expect(second.dryRun).toBe(first.dryRun);
+      expect(second.candidates).toEqual(first.candidates);
+
+      // And still truly a no-op after TWO passes, not just one.
+      expect(getMemoryColumn(db, memId, 'repo')).toBe('agent-feed00000f01');
+      expect(getSessionColumn(db, resolvableSession, 'repo')).toBe('agent-feed00000f01');
+    },
+  );
+
+  it(
+    'the same byte-identical property holds for the project column + --sessions combination',
+    () => {
+      const db = setupDb();
+      const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-feed00000f03');
+      const sessionId = randomUUID();
+      insertSession(db, sessionId, { project: 'agent-feed00000f03', cwd: worktreeDir });
+      insertMemory(db, { session_id: sessionId, project: 'agent-feed00000f03' });
+
+      const first = runRepoIdentityBackfill(db, { dryRun: true, column: 'project', includeSessions: true });
+      const second = runRepoIdentityBackfill(db, { dryRun: true, column: 'project', includeSessions: true });
+
+      expect(second).toEqual(first);
+    },
+  );
+});
+
+describe('runRepoIdentityBackfill — AC-8: post-apply counts are fully accounted for (memories AND sessions)', () => {
+  it(
+    'repo column + --sessions: after apply, GLOB agent-* counts on BOTH memories and sessions ' +
+    'equal result.unresolved (no row silently left behind on either table)',
+    () => {
+      const db = setupDb();
+      const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-aaaa900000f0');
+      const resolvableSession = randomUUID();
+      insertSession(db, resolvableSession, { repo: 'agent-aaaa900000f0', cwd: worktreeDir });
+      insertMemory(db, { session_id: resolvableSession, repo: 'agent-aaaa900000f0' });
+
+      // Genuinely unresolvable (AC-4 'unresolved' reason): a recorded cwd
+      // that matches NEITHER trusted worktree layout — stays agent-* on
+      // both tables after apply.
+      const unresolvableSession = randomUUID();
+      insertSession(db, unresolvableSession, {
+        repo: 'agent-deadbeef9001',
+        cwd: 'C:\\work\\mega\\some-random-scratch-dir\\agent-deadbeef9001',
+      });
+      insertMemory(db, { session_id: unresolvableSession, repo: 'agent-deadbeef9001' });
+
+      const result = runRepoIdentityBackfill(db, { dryRun: false, includeSessions: true });
+      expect(result.applied).toBe(1);
+      expect(result.unresolved).toBe(1);
+
+      const memGlobCount = (
+        db.prepare(`SELECT COUNT(*) as n FROM memories WHERE repo GLOB 'agent-*'`).get() as { n: number }
+      ).n;
+      const sessionGlobCount = (
+        db.prepare(`SELECT COUNT(*) as n FROM sessions WHERE repo GLOB 'agent-*'`).get() as { n: number }
+      ).n;
+
+      expect(memGlobCount).toBe(result.unresolved);
+      expect(sessionGlobCount).toBe(result.unresolved);
+    },
+  );
+
+  it(
+    'project column + --sessions: same GLOB-count parity on BOTH memories and sessions',
+    () => {
+      const db = setupDb();
+      const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-bbbb900000f1');
+      const resolvableSession = randomUUID();
+      insertSession(db, resolvableSession, { project: 'agent-bbbb900000f1', cwd: worktreeDir });
+      insertMemory(db, { session_id: resolvableSession, project: 'agent-bbbb900000f1' });
+
+      const unresolvableSession = randomUUID();
+      insertSession(db, unresolvableSession, {
+        project: 'agent-deadbeef9002',
+        cwd: 'C:\\work\\mega\\some-random-scratch-dir\\agent-deadbeef9002',
+      });
+      insertMemory(db, { session_id: unresolvableSession, project: 'agent-deadbeef9002' });
+
+      const result = runRepoIdentityBackfill(db, { dryRun: false, column: 'project', includeSessions: true });
+      expect(result.applied).toBe(1);
+      expect(result.unresolved).toBe(1);
+
+      const memGlobCount = (
+        db.prepare(`SELECT COUNT(*) as n FROM memories WHERE project GLOB 'agent-*'`).get() as { n: number }
+      ).n;
+      const sessionGlobCount = (
+        db.prepare(`SELECT COUNT(*) as n FROM sessions WHERE project GLOB 'agent-*'`).get() as { n: number }
+      ).n;
+
+      expect(memGlobCount).toBe(result.unresolved);
+      expect(sessionGlobCount).toBe(result.unresolved);
+    },
+  );
+
+  it(
+    "the dashboard's queryProjectOptions (src/server/queries/dashboard.ts, read-only import — " +
+    'not edited by this slice) lists only resolvable project names plus the explicitly-' +
+    'unresolved remainder after apply, so AC-8\'s dashboard-dropdown half holds without any ' +
+    'change to dashboard.ts',
+    () => {
+      const db = setupDb();
+      const { worktreeDir } = makeWorktreeFixture('real-project-name', 'agent-cccc900000f2');
+      const resolvableSession = randomUUID();
+      insertSession(db, resolvableSession, { project: 'agent-cccc900000f2', cwd: worktreeDir });
+      insertMemory(db, { session_id: resolvableSession, project: 'agent-cccc900000f2' });
+
+      const unresolvableSession = randomUUID();
+      insertSession(db, unresolvableSession, {
+        project: 'agent-deadbeef9003',
+        cwd: 'C:\\work\\mega\\some-random-scratch-dir\\agent-deadbeef9003',
+      });
+      insertMemory(db, { session_id: unresolvableSession, project: 'agent-deadbeef9003' });
+
+      // Noise: an already-correct, never-mis-tagged project, to confirm
+      // the dropdown isn't somehow cleared or over-filtered by the apply.
+      const normalSession = randomUUID();
+      insertSession(db, normalSession, { project: 'anothergenuineproject', cwd: null });
+      insertMemory(db, { session_id: normalSession, project: 'anothergenuineproject' });
+
+      const result = runRepoIdentityBackfill(db, { dryRun: false, column: 'project' });
+      expect(result.applied).toBe(1);
+      expect(result.unresolved).toBe(1);
+
+      const options = queryProjectOptions(db);
+
+      expect(options).toContain('real-project-name'); // resolved by this apply
+      expect(options).toContain('anothergenuineproject'); // untouched, already-correct
+      expect(options).toContain('agent-deadbeef9003'); // explicitly-unresolved remainder
+      expect(options).not.toContain('agent-cccc900000f2'); // the resolved row's OLD value is gone
+    },
+  );
+});
+
+describe('repoIdentityBackfillCommand — CLI layer (FEAT-553 argv wiring: --column/--sessions/--yes)', () => {
+  const origDataDir = process.env.ASTRA_MEMORY_DATADIR;
+
+  afterEach(() => {
+    if (origDataDir === undefined) delete process.env.ASTRA_MEMORY_DATADIR;
+    else process.env.ASTRA_MEMORY_DATADIR = origDataDir;
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  it('--column rejects an invalid value: exits 1 with a clear error, never opens a db', () => {
+    const dir = mkTmpDir('repoidbackfill-cli-');
+    process.env.ASTRA_MEMORY_DATADIR = dir;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    repoIdentityBackfillCommand(['--column', 'bogus']);
+
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls[0]![0]).toContain('--column must be one of');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('AC-6: default invocation (no --yes) is a dry-run — zero mutations, preview reports scanned/would-re-stamp/unresolved', () => {
+    const dir = mkTmpDir('repoidbackfill-cli-');
+    process.env.ASTRA_MEMORY_DATADIR = dir;
+    const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-cafe0000000001');
+    let memId = '';
+    seedFileDb(dir, (db) => {
+      const sessionId = randomUUID();
+      insertSession(db, sessionId, { repo: 'agent-cafe0000000001', cwd: worktreeDir });
+      memId = insertMemory(db, { session_id: sessionId, repo: 'agent-cafe0000000001' });
+    });
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    repoIdentityBackfillCommand([]);
+
+    const printed = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(printed).toContain('Would re-stamp: 1');
+    expect(printed).toContain('Preview only');
+
+    expect(readFileDbColumn(dir, 'memories', 'repo', memId)).toBe('agent-cafe0000000001');
+  });
+
+  it('AC-6: a second identical dry-run invocation (still no --yes) reports byte-identical preview text', () => {
+    const dir = mkTmpDir('repoidbackfill-cli-');
+    process.env.ASTRA_MEMORY_DATADIR = dir;
+    const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-cafe0000000009');
+    seedFileDb(dir, (db) => {
+      const sessionId = randomUUID();
+      insertSession(db, sessionId, { repo: 'agent-cafe0000000009', cwd: worktreeDir });
+      insertMemory(db, { session_id: sessionId, repo: 'agent-cafe0000000009' });
+    });
+
+    const logSpy1 = vi.spyOn(console, 'log').mockImplementation(() => {});
+    repoIdentityBackfillCommand([]);
+    const first = logSpy1.mock.calls.map(c => c.join(' ')).join('\n');
+    logSpy1.mockRestore();
+    // Guard against a vacuous pass (e.g. both runs finding 0 candidates):
+    // the fixture must actually be a live would-re-stamp candidate.
+    expect(first).toContain('Would re-stamp: 1');
+
+    const logSpy2 = vi.spyOn(console, 'log').mockImplementation(() => {});
+    repoIdentityBackfillCommand([]);
+    const second = logSpy2.mock.calls.map(c => c.join(' ')).join('\n');
+
+    expect(second).toBe(first);
+  });
+
+  it('--yes applies the mutation (no flag leaves it a preview, confirmed above)', () => {
+    const dir = mkTmpDir('repoidbackfill-cli-');
+    process.env.ASTRA_MEMORY_DATADIR = dir;
+    const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-cafe0000000002');
+    let memId = '';
+    seedFileDb(dir, (db) => {
+      const sessionId = randomUUID();
+      insertSession(db, sessionId, { repo: 'agent-cafe0000000002', cwd: worktreeDir });
+      memId = insertMemory(db, { session_id: sessionId, repo: 'agent-cafe0000000002' });
+    });
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    repoIdentityBackfillCommand(['--yes']);
+
+    expect(readFileDbColumn(dir, 'memories', 'repo', memId)).toBe('astramemory-local');
+  });
+
+  it('--column project scans/re-stamps memories.project, not memories.repo', () => {
+    const dir = mkTmpDir('repoidbackfill-cli-');
+    process.env.ASTRA_MEMORY_DATADIR = dir;
+    const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-cafe0000000003');
+    let memId = '';
+    seedFileDb(dir, (db) => {
+      const sessionId = randomUUID();
+      insertSession(db, sessionId, { project: 'agent-cafe0000000003', cwd: worktreeDir });
+      memId = insertMemory(db, { session_id: sessionId, project: 'agent-cafe0000000003' });
+    });
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    repoIdentityBackfillCommand(['--yes', '--column', 'project']);
+
+    expect(readFileDbColumn(dir, 'memories', 'project', memId)).toBe('astramemory-local');
+  });
+
+  it('--column all runs both passes and reports each column independently (verified via --json)', () => {
+    const dir = mkTmpDir('repoidbackfill-cli-');
+    process.env.ASTRA_MEMORY_DATADIR = dir;
+    const repoFixture = makeWorktreeFixture('repo-side-cli', 'agent-cafe0000000004');
+    const projFixture = makeWorktreeFixture('project-side-cli', 'agent-cafe0000000005');
+    seedFileDb(dir, (db) => {
+      const repoSession = randomUUID();
+      insertSession(db, repoSession, { repo: 'agent-cafe0000000004', cwd: repoFixture.worktreeDir });
+      insertMemory(db, { session_id: repoSession, repo: 'agent-cafe0000000004' });
+
+      const projSession = randomUUID();
+      insertSession(db, projSession, { project: 'agent-cafe0000000005', cwd: projFixture.worktreeDir });
+      insertMemory(db, { session_id: projSession, project: 'agent-cafe0000000005' });
+    });
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    repoIdentityBackfillCommand(['--yes', '--column', 'all', '--json']);
+
+    const output = JSON.parse(logSpy.mock.calls[0]![0] as string) as Record<
+      'repo' | 'project',
+      { applied: number; column: string }
+    >;
+    expect(output.repo.column).toBe('repo');
+    expect(output.repo.applied).toBe(1);
+    expect(output.project.column).toBe('project');
+    expect(output.project.applied).toBe(1);
+  });
+
+  it('--sessions wires includeSessions through to the core function (sessions.<column> is re-stamped too)', () => {
+    const dir = mkTmpDir('repoidbackfill-cli-');
+    process.env.ASTRA_MEMORY_DATADIR = dir;
+    const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-cafe0000000006');
+    let sessionId = '';
+    seedFileDb(dir, (db) => {
+      sessionId = randomUUID();
+      insertSession(db, sessionId, { repo: 'agent-cafe0000000006', cwd: worktreeDir });
+      insertMemory(db, { session_id: sessionId, repo: 'agent-cafe0000000006' });
+    });
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    repoIdentityBackfillCommand(['--yes', '--sessions']);
+
+    expect(readFileDbColumn(dir, 'sessions', 'repo', sessionId)).toBe('astramemory-local');
+  });
+
+  it('without --sessions, the sessions table is left untouched (default-off, byte-identical to FEAT-484)', () => {
+    const dir = mkTmpDir('repoidbackfill-cli-');
+    process.env.ASTRA_MEMORY_DATADIR = dir;
+    const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-cafe0000000007');
+    let sessionId = '';
+    let memId = '';
+    seedFileDb(dir, (db) => {
+      sessionId = randomUUID();
+      insertSession(db, sessionId, { repo: 'agent-cafe0000000007', cwd: worktreeDir });
+      memId = insertMemory(db, { session_id: sessionId, repo: 'agent-cafe0000000007' });
+    });
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    repoIdentityBackfillCommand(['--yes']);
+
+    // Guard against a vacuous pass: the memory row must have actually been
+    // re-stamped (proving the backfill genuinely ran against this fixture)
+    // while the session row — only re-stamped when --sessions is passed —
+    // stays at its original bad-shape value.
+    expect(readFileDbColumn(dir, 'memories', 'repo', memId)).toBe('astramemory-local');
+    expect(readFileDbColumn(dir, 'sessions', 'repo', sessionId)).toBe('agent-cafe0000000007');
+  });
+
+  it('AC-9: the human-readable preview never prints the absolute worktree cwd path, only basenames', () => {
+    const dir = mkTmpDir('repoidbackfill-cli-');
+    process.env.ASTRA_MEMORY_DATADIR = dir;
+    const { worktreeDir } = makeWorktreeFixture('astramemory-local', 'agent-cafe0000000008');
+    seedFileDb(dir, (db) => {
+      const sessionId = randomUUID();
+      insertSession(db, sessionId, { repo: 'agent-cafe0000000008', cwd: worktreeDir });
+      insertMemory(db, { session_id: sessionId, repo: 'agent-cafe0000000008' });
+    });
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    repoIdentityBackfillCommand([]);
+
+    const printed = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(printed).not.toContain(worktreeDir);
+    expect(printed).toContain('astramemory-local');
+  });
 });

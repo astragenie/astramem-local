@@ -1,6 +1,51 @@
 ---
 status: PASS
+fix_pass: 20261105T235959Z
 ---
+
+> **Fix-pass addendum (2026-11-05, post-independent-verification):**
+> independent verifiers correctly flagged that "Ran the identical call a
+> second time... confirmed by the idempotent-second-run tests" (Scenario 1
+> below) misdescribed what those tests actually do: every pre-existing
+> idempotent-second-run test calls `runRepoIdentityBackfill` with `dryRun:
+> false` TWICE (apply, then apply again, finding nothing left to re-scan) —
+> never `dryRun: true` twice in succession. The underlying property AC-6
+> names ("two consecutive dry-runs produce identical counts") held logically
+> all along (the core loop's `if (!opts.dryRun)` gates make a dry run
+> provably zero-write), but it was never actually demonstrated by a test
+> before this fix pass, and the claim of demonstration above was inaccurate.
+> Corrected by two new core-level tests (`dryRun: true` called twice in a
+> row against the same unmodified DB, asserting `toEqual` on the full result
+> including the candidate list — repo-default and project+`--sessions`
+> cases) plus a CLI-level test doing the same through
+> `repoIdentityBackfillCommand` with no `--yes`. Scenario 1's "Result" line
+> below is superseded: AC-6 is now **PASS with a real test**, not "PASS at
+> the core level" via a mischaracterized existing test.
+>
+> AC-8's Scenario 3 is also superseded: the dashboard-side half is no longer
+> "not validated here" — a new test imports the real, unmodified
+> `queryProjectOptions` (`src/server/queries/dashboard.ts`, still untouched
+> by this slice) and asserts its post-apply output directly; two more new
+> tests assert the GLOB-count equality AC-8 names literally on both
+> `memories` and `sessions`. AC-8 is now PASS for the FULL text of the AC,
+> not just "the half this slice owns."
+>
+> The CLI-layer residual gap (below) is also closed: a new
+> `repoIdentityBackfillCommand` CLI-layer describe block (9 cases) now
+> exercises `--column` validation, default-dry-run, `--yes` gating,
+> `--column project`, `--column all`, `--sessions` (on/off), and AC-9's
+> no-absolute-path claim against real console output, against a file-backed
+> temp datadir via `ASTRA_MEMORY_DATADIR` — the same pattern
+> `tests/cli/queue-purge.test.ts` already uses, never the production
+> datadir.
+>
+> Evidence: `bun run build` clean; `npx tsc -p tsconfig.tests.json --noEmit`
+> 0 errors; `bunx vitest run tests/tag-hygiene/repo-identity-backfill.test.ts`
+> **35/35 passed**; `env -u ASTRA_SKIP_CONSOLIDATE bunx vitest run
+> tests/tag-hygiene tests/cli` **315/315 passed** (33 files); `node
+> contracts/validate.mjs` 58/58. This remains a builder/fix-pass
+> self-performed validation, not an independently-dispatched validator pass
+> — unchanged by this addendum, called out again in the handoff.
 
 # Validation Result — SLICE-445 / FEAT-553 (extend backfill core to the project column + sessions, dry-run only)
 
