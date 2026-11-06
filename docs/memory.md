@@ -111,7 +111,8 @@ checkout — fails on the pre-fix code).
 ## Known open gaps (updated 2026-11-05, re-verify before quoting)
 
 - **Provenance leak: Claude Code agent-worktree dir names stored as `project` (and sometimes `repo`)
-  — FEAT-553 in flight, SLICE-446 done (verified 2026-11-05).** 17,877 of 119,950 memories (15%)
+  — FIXED 2026-11-05/06, FEAT-553 complete (outcome at the end of this entry; the DEC-017 caveat below is
+  superseded: `.claude/artifacts/loop/decisions/DEC-017.md` exists since SLICE-443 landed).** 17,877 of 119,950 memories (15%)
   carry `project` like `agent-a0112287d8dd8d401` — 270 distinct bogus "projects" polluting the
   dashboard project filter (`SELECT DISTINCT project FROM memories`,
   `src/server/queries/dashboard.ts:276`). Cause: Claude Code runs isolated agents in
@@ -151,6 +152,21 @@ checkout — fails on the pre-fix code).
   (SLICE-442/444/445/447) implement the daemon-side heuristic, ingest override, and backfill
   extension against whatever DEC-017 decides once it exists; SLICE-446 itself is
   documentation/cross-repo scope only — no source change in this repo.
+  **Outcome (2026-11-06, all 6 slices merged + released as `0.22.1+0b96eb9e`):** `deriveWorktreeSafeBasename`
+  recognises `<repo>/.claude/worktrees/<x>` (SLICE-442); DEC-017 trust policy (SLICE-443); ingest overrides a
+  hook-stamped `project_id` only when it equals `basename(cwd)` and logs `{original, derived, source}` with
+  basenames only (SLICE-444); `repo-identity-backfill --column repo|project|all --sessions` with `cwdBasename`
+  + `source` fields, preview default, `--yes` to mutate (SLICE-445); runbook
+  `docs/runbooks/provenance-backfill.md` (SLICE-447). Prod backfill applied with backup
+  `memory-20261105T204726.sqlite`: repo 4,841 re-stamped (1,083 unresolved), project 10,717 (3,493
+  unresolved) + a targeted `--pattern '^agent-l3-4$'` pass of 7,398 rows → `prism` (string-heuristic, worktree
+  deleted), sessions 20. Remaining `agent-*` rows: memories.project 969 (23 distinct, all unresolvable by
+  design: no session / no cwd / untrusted shape), memories.repo 854, sessions 3; post-apply dry-run proposes 0.
+  Dashboard project dropdown 372 → 102 options. Notes: the default bad-shape pattern excludes `agent-l3-4` (no
+  hex) and includes branch-named worktree labels (`memoized-jumping-elephant`, `transient-dancing-wren`,
+  `deploy-health-fix`, …) — those were re-stamped to their repos on purpose. The backfill ran against the live
+  daemon; `/health` showed a 55s event-loop stall during the ~18k-row UPDATE pass (self-recovered) — prefer a
+  quiet window next time. Plugin-side hook fix still open: `astragenie/astramem-plugin#68`.
 - **Agent provenance IS captured but the dashboard never exposes it.** `memories.agent` is populated
   from the SubagentStop payload's `agent_type` (98.7% coverage; 450 distinct values: `claude-code`
   105k main-session rows, then `crew:reviewer` 1180, `crew:fullstack-dev` 1158, `general-purpose` 613,
@@ -158,8 +174,11 @@ checkout — fails on the pre-fix code).
   is the `<prefix>:` of the value). Recall/search already filter on it (`--agent`, `filters.agent`,
   FEAT-423/424, index from migration 019) — only the dashboard lacks an agent dropdown (it has
   project + profile only). Ad-hoc `Agent(name=…)` labels (`reviewer-420`, `arch-454`) land in the
-  same column, so a dropdown should group by plugin prefix or cap to top-N. **Filed as FEAT-554 (P2,
-  autonomous-safe, 8 ACs incl. XSS-escape + bounded top-N query, 2026-11-05).**
+  same column, so a dropdown should group by plugin prefix or cap to top-N. **DONE 2026-11-05 (FEAT-554 /
+  SLICE-448, released in `0.22.1+0b96eb9e`):** `/dashboard` has an `agent` select grouped by plugin prefix
+  (top-N by count + free-text fallback), an Agent column, deep link `?agent=crew:reviewer`; the form posts a
+  second empty `agent` param from the text box, so `parseMemoryFilterParam` takes the last NON-blank value.
+  Still a 25-row activity window (LIMIT 25) — paging the full filtered history is a follow-up.
 
 - **Doctor DOES run unattended** — a **frequent 15-min** pass runs every `tier: 'cheap'` check
   (DB-only, no LLM/embed provider); metered LLM/embed probes piggyback the **existing 24h cleanup
@@ -214,7 +233,9 @@ checkout — fails on the pre-fix code).
   logged `kept 2 (0.22.1+be1a47b9, 0.15.1+nogit), pruned 2 (0.22.1+56e7f4c0, 0.22.0+fe23ee77)` — i.e. it
   kept the oldest `+nogit` dir and deleted the two most recent prior releases, so `reinstall --rollback`
   would now land on 0.15.1. Keep-order is not "newest 2" as documented; probably a lexical/mtime sort
-  quirk on the `+nogit` suffix. Unfixed.
+  quirk on the `+nogit` suffix. Unfixed. (Second data point 2026-11-06: with `0.15.1+nogit`,
+  `0.22.1+be1a47b9`, `0.22.1+0b96eb9e` present it pruned `0.15.1+nogit` correctly — the bad keep happened when a
+  `0.22.0+…` dir was also present; smells like version-sort confusion rather than `+nogit` per se.)
 - **`reinstall` re-activates the FEAT-439 post-merge hook** (`core.hooksPath=scripts/git-hooks`) — it was
   unset before 2026-11-05 and is set again now; it auto-reinstalls prod on any migrations/storage merge,
   including local branch merges.
@@ -372,6 +393,13 @@ checkout — fails on the pre-fix code).
   down to 3 environmental `tests/service/shim.test.ts` timeouts once unset. Run the gate as
   `env -u ASTRA_SKIP_CONSOLIDATE bun run test` (or remove the var from the user environment); the
   FEAT-548 handoff already lists "must be unset" as a precondition.
+- **Two environmental test failures on this box (classified 2026-11-05, both reproduce on the pre-wave
+  base commit `02cf8ede`, so they are NOT regressions):** (1) `tests/service/shim.test.ts` "watchdog probe
+  output capture" cases time out at 5000ms only under full-parallel suite load — 43/43 when the file runs
+  alone; (2) `scripts/eval/shared/detach.test.ts` "manifest-scoped kill stops it" fails deterministically
+  (`expected [] to deeply equal [<pid>]`) even in isolation — the detached-child PID enumeration does not
+  find the child on this Windows box. Treat a 4–5 failure tail confined to these two files as green; anything
+  else is real.
 
 - **`docs/todo/v0.1.2.md`** — the sole file in `docs/todo/`, at a version 20+ releases behind
   current (`0.21.0`). Likely fully superseded; owner should confirm and delete.

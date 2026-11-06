@@ -3,7 +3,8 @@ title: Wave plan — FEAT-553 provenance leak fix + FEAT-554 dashboard agent fil
 created: 2026-11-05T22:40:00Z
 author: lead session "mem-local" (428de2a2)
 supersedes: 20260710T180000Z-wave-plan-drain-triaged-post-v014.md
-status: active
+status: completed
+completed: 2026-11-06T02:55:00Z
 goal: land both FEATs in three waves — 4 parallel worktrees, then 2, then one operator-gated prod step — one owner per file, deps enforced by parking not-yet-eligible slices outside slices/pending
 ---
 
@@ -183,3 +184,21 @@ FEAT-553 after wave 3.
 - `doctor`: handler run-log green, served version = build.
 - `docs/memory.md` gap entries superseded with final numbers; FEAT-553 and FEAT-554 in `done/`.
 - Cross-repo issue `astragenie/astramem-plugin#N` referenced from FEAT-553.
+
+## Execution record (2026-11-05/06)
+
+- Wave 1: 442/443/446/448 → merged `d8ddad1f`, `63904c64`, `6a532b69`, `379b4fa9` (448 needed two fix
+  rounds: duplicate `agent` query param dropped the filter; AC-4 zero-match test; scope amendment for
+  `src/server/routes/dashboard.ts`). Harness: `dispatch.mts prepare` → Workflow (build → 3 adversarial
+  lenses → fix → re-verify) → markers → `dispatch.mts finalize`.
+- Wave 2: 444 → `c9bc8537`; 445 → `983a496f` after one fix round (`--json` leaked absolute cwd; added
+  `cwdBasename` + `source`). Full suite: only the two known environmental failures.
+- Release: `reinstall` → `0.22.1+0b96eb9e`, healthy in 5s.
+- Wave 3: backup `memory-20261105T204726.sqlite`; pass 1 `--column all --sessions --yes` (repo 4,841,
+  project 10,717, sessions 19); pass 2 `--pattern '^agent-l3-4$'` (7,398 → prism, 1 session). Remaining
+  `agent-*`: project 969 / repo 854 / sessions 3 — all unresolvable by design. Dashboard project options
+  372 → 102.
+- Lessons: the wave planner ignores depends_on (park slices); it needs block-form `touches_files`; builders
+  in Workflow subagents cannot dispatch the crew ladder (no Agent tool) and fall back to doing it inline —
+  the adversarial verifiers are what caught the real defects; ceremony side-effect files under
+  `.claude/state/` trip a naive scope lens; `ASTRA_SKIP_CONSOLIDATE=1` is set in the box's environment.

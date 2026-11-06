@@ -1,7 +1,7 @@
 ---
 id: SLICE-447
 title: Operator-gated prod apply with pre-apply backup + post-apply count verification
-status: pending
+status: completed
 feature: FEAT-553
 phase: null
 priority: P1
@@ -9,17 +9,15 @@ target_release: null
 requires_validation: true
 risk: high
 created: 2026-11-05
-updated: 2026-11-05
+updated: 2026-11-06
 effort_points: 1
 estimated_tokens: 60000
-touches_files:
-  - docs/runbooks/provenance-backfill.md
+touches_files: [docs/runbooks/provenance-backfill.md]
 wave: 3
-depends_on:
-  - SLICE-444
-  - SLICE-445
+depends_on: [SLICE-444, SLICE-445]
 wave_attempts: 0
 pending_fix: false
+completed_at: 2026-11-06
 ---
 # SLICE-447: Operator-gated prod apply with pre-apply backup + post-apply count verification
 
@@ -32,6 +30,10 @@ Fix provenance leak: Claude Code agent-worktree directory names (agent-<id>) sto
 ## In scope
 
 - OPERATOR-GATED, not autonomous. Write `docs/runbooks/provenance-backfill.md`, then execute it with the operator present.
+
+## Runbook
+
+See `docs/runbooks/provenance-backfill.md` — contains the full operator playbook: backup, preview, go/no-go gate, apply, verify (AC-8), write-back, rollback.
 - Preconditions: SLICE-444 + SLICE-445 merged; `bun run build` + `node dist/cli/index.js reinstall` so the RUNNING daemon carries the ingest override (otherwise bogus rows keep arriving until the plugin fix lands); confirm `ls migrations | tail -1` matches the installed release (checkout-CLI-migrates-prod footgun, docs/memory.md 2026-11-05).
 - Steps: (1) `node dist/cli/index.js backup` and note the snapshot path; (2) `node dist/cli/index.js repo-identity-backfill --column all --sessions --json > preview.json`, record scanned / would-re-stamp / unresolved; (3) operator confirms; (4) rerun with `--yes`; (5) verify: `SELECT COUNT(*) FROM memories WHERE project GLOB 'agent-*'` and the same on `sessions` both equal the reported unresolved count (AC-8), `/dashboard` project dropdown shows no `agent-*` entries beyond those, `doctor` green on handler run-log; (6) write the final numbers into `docs/memory.md`. Rollback: `node dist/cli/index.js restore <snapshot>`.
 

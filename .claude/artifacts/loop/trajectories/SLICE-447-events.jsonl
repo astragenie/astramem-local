@@ -1,0 +1,12 @@
+{"type":"gate_transition","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:28:16.312Z","gate":"review","from":null,"to":"passed","ts":"2026-11-06T03:28:16.312Z"}
+{"type":"gate_transition","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:28:16.312Z","gate":"blocked","from":null,"to":"passed","ts":"2026-11-06T03:28:16.312Z"}
+{"type":"gate_transition","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:28:16.312Z","gate":"validation","from":null,"to":"failed","ts":"2026-11-06T03:28:16.312Z"}
+{"type":"gate_transition","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:28:16.312Z","gate":"test-adequacy","from":null,"to":"passed","ts":"2026-11-06T03:28:16.312Z"}
+{"type":"gate_transition","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:28:16.312Z","gate":"simplify","from":null,"to":"passed","ts":"2026-11-06T03:28:16.312Z"}
+{"type":"workflow_state_changed","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:28:17.919Z","from":"building","to":"done","ts":"2026-11-06T03:28:17.919Z"}
+{"type":"gate_transition","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:29:07.678Z","gate":"review","from":null,"to":"passed","ts":"2026-11-06T03:29:07.678Z"}
+{"type":"gate_transition","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:29:07.678Z","gate":"blocked","from":null,"to":"passed","ts":"2026-11-06T03:29:07.678Z"}
+{"type":"gate_transition","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:29:07.678Z","gate":"validation","from":null,"to":"passed","ts":"2026-11-06T03:29:07.678Z"}
+{"type":"gate_transition","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:29:07.678Z","gate":"test-adequacy","from":null,"to":"passed","ts":"2026-11-06T03:29:07.678Z"}
+{"type":"gate_transition","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:29:07.678Z","gate":"simplify","from":null,"to":"passed","ts":"2026-11-06T03:29:07.678Z"}
+{"type":"workflow_state_changed","sliceId":"SLICE-447","featureId":"FEAT-553","timestamp":"2026-11-06T03:29:08.436Z","from":"building","to":"done","ts":"2026-11-06T03:29:08.436Z"}

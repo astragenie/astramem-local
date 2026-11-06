@@ -1,0 +1,4 @@
+{"type":"slice_complete","sliceId":"SLICE-447","timestamp":"2026-11-06T03:28:17.918Z","featureId":"FEAT-553","featureMovedTo":null,"validationSatisfied":false}
+{"type":"memory_capture","sliceId":"SLICE-447","timestamp":"2026-11-06T03:28:17.919Z","learningsRecorded":0,"learningsSkipped":0,"creditedCount":0,"creditSkippedReason":"empty"}
+{"type":"slice_complete","sliceId":"SLICE-447","timestamp":"2026-11-06T03:29:08.435Z","featureId":"FEAT-553","featureMovedTo":null,"validationSatisfied":true}
+{"type":"memory_capture","sliceId":"SLICE-447","timestamp":"2026-11-06T03:29:08.436Z","learningsRecorded":0,"learningsSkipped":0,"creditedCount":0,"creditSkippedReason":"empty"}

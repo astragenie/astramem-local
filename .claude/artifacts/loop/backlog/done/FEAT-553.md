@@ -1,6 +1,6 @@
 ---
 id: FEAT-553
-status: in-progress
+status: done
 priority: P1
 category: feature
 target_release: null
@@ -48,7 +48,8 @@ tags: [storage, api-change, workflow, test, docs]
 needs_contract: false
 needs_ux: false
 started_at: 2026-11-05
-slices_complete: [SLICE-443, SLICE-442, SLICE-444, SLICE-445]
+slices_complete: [SLICE-443, SLICE-442, SLICE-444, SLICE-445, SLICE-447, SLICE-446]
+completed_at: 2026-11-06
 ---
 ## Description
 

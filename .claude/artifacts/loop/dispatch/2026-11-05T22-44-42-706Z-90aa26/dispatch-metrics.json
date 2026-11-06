@@ -1,0 +1,15 @@
+{
+  "runId": "2026-11-05T22-44-42-706Z-90aa26",
+  "startedAt": "2026-11-05T23:34:42.558Z",
+  "completedAt": "2026-11-05T23:34:48.926Z",
+  "status": "partial",
+  "totalTokens": 0,
+  "promptTokens": 0,
+  "completionTokens": 0,
+  "estimatedCostUsd": 0,
+  "model": "unknown",
+  "childCount": 1,
+  "partialChildren": [
+    "SLICE-448"
+  ]
+}
