@@ -151,12 +151,27 @@ export function buildClaudeEnvelope(
    *  key envelope shape (conditionally spread below, never set to
    *  `undefined`). */
   captureSource?: 'auto_capture' | 'hook_close',
+  /** astramem-local#375 (subagent capture attribution). `agentType` is the
+   *  Claude Code SubagentStop payload's `agent_type` (e.g. `devcrew:reviewer`),
+   *  forwarded by the astramem-plugin hook as `--agent-type`. When set it
+   *  replaces the historical hardcoded `'claude-code'` so the distilled atoms
+   *  land on the producing subagent's agent profile instead of the parent
+   *  session's. `transcriptId` is the transcript file's basename; a subagent
+   *  sidecar (`agent-<id>.jsonl`) repeats the PARENT's `sessionId` on every
+   *  line, so without a distinct session id the subagent's capture would
+   *  upsert the parent's sessions row and re-label the whole parent session
+   *  (sessions.agent = COALESCE(excluded.agent, agent)). Suffixing keeps the
+   *  parent untouched. Omitted → byte-identical to the pre-#375 envelope. */
+  attribution?: { agentType?: string; transcriptId?: string },
 ): ClaudeCaptureEnvelope {
+  const agentType = attribution?.agentType?.trim() || undefined;
+  const transcriptId = attribution?.transcriptId;
+  const isSubagentSidecar = agentType !== undefined && transcriptId !== undefined && /^agent-/.test(transcriptId);
   return {
     event,
-    session_id: `claude-${parsed.sessionId}`,
+    session_id: isSubagentSidecar ? `claude-${parsed.sessionId}:${transcriptId}` : `claude-${parsed.sessionId}`,
     project_id: deriveWorktreeSafeBasename(parsed.cwd) ?? 'claude-code',
-    agent_type: 'claude-code',
+    agent_type: agentType ?? 'claude-code',
     ...(parsed.cwd ? { cwd: parsed.cwd } : {}),
     captured_at: capturedAt,
     kind: 'transcript',

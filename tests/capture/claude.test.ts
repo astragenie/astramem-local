@@ -116,6 +116,47 @@ describe('buildClaudeEnvelope', () => {
     expect(env.project_id).toBe('astramemory-local');
   });
 
+  // astramem-local#375: subagent capture attribution.
+  it('defaults agent_type to claude-code when no attribution is passed (byte-identical to pre-#375)', () => {
+    const parsed = parseClaudeTranscript(SESSION, '/x/session.jsonl');
+    const env = buildClaudeEnvelope(parsed, 'subagent_stop', '0.9.0', '2026-07-09T12:00:00.000Z');
+    expect(env.agent_type).toBe('claude-code');
+    expect(env.session_id).toBe('claude-sess-claude-1');
+  });
+
+  it('stamps agent_type from the hook-forwarded subagent type and suffixes the session id for a subagent sidecar', () => {
+    const parsed = parseClaudeTranscript(SESSION, '/x/subagents/agent-abc123.jsonl');
+    const env = buildClaudeEnvelope(parsed, 'subagent_stop', '0.9.0', '2026-07-09T12:00:00.000Z', 'hook_close', {
+      agentType: 'devcrew:reviewer',
+      transcriptId: 'agent-abc123',
+    });
+    expect(env.agent_type).toBe('devcrew:reviewer');
+    // The sidecar repeats the parent sessionId on every line; a distinct id keeps the
+    // parent's sessions row (and its agent) untouched.
+    expect(env.session_id).toBe('claude-sess-claude-1:agent-abc123');
+    expect(CanonicalIngestSchema.safeParse(env).success).toBe(true);
+  });
+
+  it('keeps the plain session id when agent_type is given for a main-session transcript', () => {
+    const parsed = parseClaudeTranscript(SESSION, '/x/session.jsonl');
+    const env = buildClaudeEnvelope(parsed, 'session_end', '0.9.0', '2026-07-09T12:00:00.000Z', undefined, {
+      agentType: 'claude-code',
+      transcriptId: 'session',
+    });
+    expect(env.agent_type).toBe('claude-code');
+    expect(env.session_id).toBe('claude-sess-claude-1');
+  });
+
+  it('treats a blank agent_type as absent', () => {
+    const parsed = parseClaudeTranscript(SESSION, '/x/subagents/agent-abc123.jsonl');
+    const env = buildClaudeEnvelope(parsed, 'subagent_stop', '0.9.0', undefined, undefined, {
+      agentType: '   ',
+      transcriptId: 'agent-abc123',
+    });
+    expect(env.agent_type).toBe('claude-code');
+    expect(env.session_id).toBe('claude-sess-claude-1');
+  });
+
   // FEAT-455 / ADR-012 decision 4.
   it('omits capture_source entirely when not passed (byte-identical to pre-FEAT-455)', () => {
     const parsed = parseClaudeTranscript(SESSION, '/x/session.jsonl');
