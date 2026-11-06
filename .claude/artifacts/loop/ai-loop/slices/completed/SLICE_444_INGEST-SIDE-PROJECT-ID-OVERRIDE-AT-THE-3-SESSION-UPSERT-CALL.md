@@ -1,7 +1,7 @@
 ---
 id: SLICE-444
 title: Ingest-side project_id override at the 3 session-upsert call sites + override log event
-status: pending
+status: completed
 feature: FEAT-553
 phase: null
 priority: P1
@@ -9,21 +9,15 @@ target_release: null
 requires_validation: true
 risk: high
 created: 2026-11-05
-updated: 2026-11-05
+updated: 2026-11-06
 effort_points: 2
 estimated_tokens: 100000
-touches_files:
-  - src/pipeline/derive-project.ts
-  - src/server/routes/ingest.ts
-  - tests/pipeline/derive-project.test.ts
-  - tests/tag-hygiene/worktree-ingest-canary.test.ts
-  - tests/server/ingest.test.ts
+touches_files: [src/pipeline/derive-project.ts, src/server/routes/ingest.ts, tests/pipeline/derive-project.test.ts, tests/tag-hygiene/worktree-ingest-canary.test.ts, tests/server/ingest.test.ts]
 wave: 2
-depends_on:
-  - SLICE-442
-  - SLICE-443
+depends_on: [SLICE-442, SLICE-443]
 wave_attempts: 0
 pending_fix: false
+completed_at: 2026-11-06
 ---
 # SLICE-444: Ingest-side project_id override at the 3 session-upsert call sites + override log event
 

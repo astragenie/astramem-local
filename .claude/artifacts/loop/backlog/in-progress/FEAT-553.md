@@ -5,7 +5,7 @@ priority: P1
 category: feature
 target_release: null
 created: 2026-11-05
-updated: 2026-11-05
+updated: 2026-11-06
 depends_on: []
 slices: [SLICE-442, SLICE-443, SLICE-444, SLICE-445, SLICE-446, SLICE-447]
 derived_from: null
@@ -48,7 +48,7 @@ tags: [storage, api-change, workflow, test, docs]
 needs_contract: false
 needs_ux: false
 started_at: 2026-11-05
-slices_complete: [SLICE-443, SLICE-442]
+slices_complete: [SLICE-443, SLICE-442, SLICE-444]
 ---
 ## Description
 
