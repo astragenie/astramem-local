@@ -178,7 +178,12 @@ checkout — fails on the pre-fix code).
   SLICE-448, released in `0.22.1+0b96eb9e`):** `/dashboard` has an `agent` select grouped by plugin prefix
   (top-N by count + free-text fallback), an Agent column, deep link `?agent=crew:reviewer`; the form posts a
   second empty `agent` param from the text box, so `parseMemoryFilterParam` takes the last NON-blank value.
-  Still a 25-row activity window (LIMIT 25) — paging the full filtered history is a follow-up.
+  Still a 25-row activity window (LIMIT 25) — paging the full filtered history is **FEAT-555 (P2, filed
+  2026-11-06, not autonomous-safe)**: no index on `memories` leads with `created_at` (verified by PM triage
+  across every `CREATE INDEX … ON memories` in `migrations/`), so offset paging + a filtered COUNT are
+  120k-row scans and the profile filter's correlated `transcripts` subquery runs per row — the perf AC must
+  be feed-query-scoped with query-plan evidence; the existing pagination tests hand in-memory fixtures to
+  the renderer and exercise no SQL.
 
 - **Doctor DOES run unattended** — a **frequent 15-min** pass runs every `tier: 'cheap'` check
   (DB-only, no LLM/embed provider); metered LLM/embed probes piggyback the **existing 24h cleanup
