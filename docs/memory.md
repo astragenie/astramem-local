@@ -9,9 +9,11 @@ Volatile, dated facts agents keep rediscovering. **Supersede entries by editing 
 into it (dated corrections, incident narratives, current eval numbers) now lives, extracted during
 the 2026-07-21 agentic-setup rebuild.
 
-## Version / build status (verified 2026-11-05)
+## Version / build status (verified 2026-11-06)
 
-- **Current tagged release: v0.22.1** (2026-08-06, `56e7f4c0`) — 63 migrations. Main tip is `be1a47b9`
+- **Release 0.23.0 prepared 2026-11-06 (package.json + CHANGELOG bumped on main; tag `v0.23.0` NOT pushed
+  until the operator says so — the tag push is the npm publish).** Last tagged release: v0.22.1 (2026-08-06,
+  `56e7f4c0`) — 63 migrations. Main tip is `be1a47b9`
   (2026-08-19), 5 commits past the tag, and carries unreleased migration `064-cost-ledger.sql`
   (FEAT-476 Phase 0, PR #491) — so main = schema 64 while v0.22.1 = schema 63. **Local prod daemon on
   this box runs release `0.22.1+be1a47b9` (main tip, package version still 0.22.1, schema 64)** since
