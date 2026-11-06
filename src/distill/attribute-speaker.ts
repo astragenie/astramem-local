@@ -29,10 +29,8 @@
  *     through to tier 2 (which applies its own margin check on the full
  *     candidate set) rather than guessing.
  *
- *  2. FUZZY FALLBACK (FEAT-505): live-reproduced twice — the then-default
- *     extraction model (codex-subscription/gpt-5.4-mini, since retired by
- *     OpenAI from ChatGPT-account Codex — see DEFAULT_MODEL in
- *     codex-subscription.ts) paraphrases the
+ *  2. FUZZY FALLBACK (FEAT-505): live-reproduced twice — the default
+ *     extraction model (codex-subscription/gpt-5.4-mini) paraphrases the
  *     evidence excerpt despite the extraction prompt demanding a verbatim
  *     copy (src/distill/prompts/extract.ts), so tier 1 misses on real
  *     traffic and every atom's speaker_label came back null (L2 finding,
